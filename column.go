@@ -20,9 +20,9 @@ const (
 	columnAny
 )
 
-// Column is a tagged, value-typed CSV field. Pass it to Write by value; it
-// holds no pointers that escape, so building and writing columns performs no
-// heap allocation.
+// Column is a tagged, value-typed CSV field. Pass it to Write by value;
+// building and writing columns performs no heap allocation for the typed
+// constructors. ColumnAny is the exception and may allocate.
 type Column struct {
 	kind ColumnKind
 	s    string

@@ -365,6 +365,22 @@ func TestReadNoProgress(t *testing.T) {
 	}
 }
 
+func TestReaderErrorNilAfterCleanEOF(t *testing.T) {
+	r := NewReader(strings.NewReader("a,b\n"))
+	for {
+		_, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+	}
+	if err := r.Error(); err != nil {
+		t.Fatalf("Error() after clean EOF = %v, want nil", err)
+	}
+}
+
 func readAllStdlibLazy(input string) ([][]string, error) {
 	r := csv.NewReader(strings.NewReader(input))
 	r.FieldsPerRecord = -1

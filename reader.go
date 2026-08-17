@@ -52,7 +52,8 @@ func (r *Record) Len() int {
 // ValueAt returns the field at index idx as a zero-copy view into the
 // Reader's internal buffer. The slice is valid only until the next call to
 // Next on the Reader that produced the Record. Convert it to a string to get
-// an owned copy, since string(v) always copies.
+// an owned copy, since string(v) always copies. It panics if idx is negative
+// or not less than Len.
 func (r *Record) ValueAt(idx int) []byte {
 	return r.fields[idx]
 }

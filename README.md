@@ -230,6 +230,16 @@ Full API documentation and runnable examples are available on
 `Writer` and `Reader` are stateful and not safe for concurrent use. Use a
 separate instance per goroutine.
 
+## Limitations
+
+go-zerocsv intentionally does not implement every `encoding/csv` feature:
+
+- The delimiter is a single byte; multi-rune delimiters are not supported.
+- Comment lines are not recognized, and leading whitespace is never trimmed.
+- Record lengths are not validated across rows.
+- The parser cannot resume after a malformed record: once a parse error
+  occurs, `Next` keeps returning it.
+
 ## Contributing
 
 1. Fork the repository.
