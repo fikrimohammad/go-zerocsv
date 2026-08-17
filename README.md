@@ -180,6 +180,23 @@ of how many rows are read, while `encoding/csv` allocates 2 objects per record
 because the reader keeps one reusable buffer; stdlib's footprint grows with
 file size.
 
+### Writing — full pass over a whole file
+
+Each iteration writes all `n` rows (6 fields each, including `int`, `float64`
+and RFC3339 time) to `io.Discard` with a fresh writer.
+
+| Rows | zerocsv ns/op | stdlib ns/op | zerocsv allocs | stdlib allocs |
+| ---- | ------------: | -----------: | --------------: | -------------: |
+| 100K | 14.1ms | 19.9ms | 5 | 399,890 |
+| 500K | 71.5ms | 100.9ms | 5 | 1,999,890 |
+| 1M | 143.2ms | 205.3ms | 5 | 3,999,890 |
+| 5M | 735.0ms | 1,062ms | 5 | 19,999,891 |
+
+zerocsv writes ~1.4x faster than `encoding/csv` and allocates a constant
+5 objects (buffer and scratch growth) no matter how many rows are written,
+whereas `encoding/csv` allocates ~4 objects per record for its `strconv`
+conversions.
+
 ### Reading — per record
 
 | Benchmark | ns/op | B/op | allocs/op |
