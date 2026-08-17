@@ -18,7 +18,7 @@ var benchNames = []string{"alpha", "beta", "gamma", "delta", "epsilon"}
 var benchStrings = []string{"alpha", "beta", "gamma", "delta", "epsilon"}
 
 func BenchmarkWriteStrings(b *testing.B) {
-	w := zerocsv.New(io.Discard)
+	w := zerocsv.NewWriter(io.Discard)
 	cols := []zerocsv.Column{
 		zerocsv.ColumnString(benchStrings[0]),
 		zerocsv.ColumnString(benchStrings[1]),
@@ -49,7 +49,7 @@ func BenchmarkWriteStringsStdlib(b *testing.B) {
 // --- realistic mixed types: ours converts zero-alloc, stdlib must strconv --
 
 func BenchmarkWriteMixed(b *testing.B) {
-	w := zerocsv.New(io.Discard)
+	w := zerocsv.NewWriter(io.Discard)
 	cols := make([]zerocsv.Column, 5)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -88,7 +88,7 @@ func BenchmarkWriteMixedStdlib(b *testing.B) {
 // --- mixed including a time column ---------------------------------------
 
 func BenchmarkWriteWithTime(b *testing.B) {
-	w := zerocsv.New(io.Discard)
+	w := zerocsv.NewWriter(io.Discard)
 	ts := time.Date(2026, 8, 17, 12, 34, 56, 0, time.UTC)
 	cols := make([]zerocsv.Column, 6)
 	b.ReportAllocs()

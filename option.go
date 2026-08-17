@@ -1,5 +1,11 @@
 package zerocsv
 
+import "errors"
+
+// ErrInvalidDelim is returned when a delimiter that would corrupt the CSV
+// structure is configured on a Writer or Reader.
+var ErrInvalidDelim = errors.New("zerocsv: invalid field delimiter")
+
 // Option configures a Writer or Reader at construction time.
 type Option func(*options)
 
@@ -17,8 +23,8 @@ func defaultOptions() *options {
 
 // WithDelimiter sets the field delimiter, for example ',' for CSV, '\t' for
 // TSV, or ';' for semicolon-separated values. The NUL byte, '"', '\r' and
-// '\n' are rejected: an invalid delimiter marks the Writer as failed, and
-// Write, WriteAll, Flush and Error report the error.
+// '\n' are rejected: an invalid delimiter marks a Writer or Reader as failed,
+// and Next, Write, WriteAll, Flush and Error report the error.
 func WithDelimiter(d byte) Option {
 	return func(o *options) {
 		o.delimiter = d

@@ -21,15 +21,25 @@ type Reader struct {
 	end   int    // number of valid bytes in buf
 	eof   bool
 
-	rec    Record   // reused record wrapper
-	fields [][]byte // reused field views
+	err        error       // sticky configuration error
+	rec        Record      // reused record wrapper
+	fields     [][]byte    // reused field views
+	fieldSpans []fieldSpan // field boundaries recorded by scan, consumed by decode
+}
+
+// fieldSpan describes one field of the record currently being scanned, as a
+// half-open interval [start, end) into buf. closed reports whether the field
+// ends with a genuine closing quote, which is excluded from the decoded value.
+type fieldSpan struct {
+	start  int
+	end    int
+	closed bool
 }
 
 // Record is a parsed CSV record. The Reader reuses a single Record and
 // overwrites it on every call to Next, so a Record is valid only until the
 // Reader is advanced again. Its fields are zero-copy views into the Reader's
-// internal buffer; copy one with slices.Clone, or convert it to a string
-// (which copies), if it must outlive the read loop.
+// internal buffer; use Copy to retain the values beyond the next call to Next.
 type Record struct {
 	fields [][]byte
 }
@@ -47,17 +57,33 @@ func (r *Record) ValueAt(idx int) []byte {
 	return r.fields[idx]
 }
 
+// Copy returns the record's fields as owned strings. The returned slice and
+// its strings remain valid after subsequent calls to Next.
+func (r *Record) Copy() []string {
+	out := make([]string, len(r.fields))
+	for i, f := range r.fields {
+		out[i] = string(f)
+	}
+	return out
+}
+
 // NewReader returns a Reader that parses CSV records from r, applying opts.
+// An invalid delimiter marks the Reader as failed; Next and Error report the
+// error.
 func NewReader(r io.Reader, opts ...Option) *Reader {
 	o := defaultOptions()
 	for _, opt := range opts {
 		opt(o)
 	}
-	return &Reader{
+	rd := &Reader{
 		r:          r,
 		delimiter:  o.delimiter,
 		lazyQuotes: o.lazyQuotes,
 	}
+	if !validDelim(o.delimiter) {
+		rd.err = ErrInvalidDelim
+	}
+	return rd
 }
 
 // Next parses and returns the next record, or io.EOF when no records remain.
@@ -68,13 +94,16 @@ func NewReader(r io.Reader, opts ...Option) *Reader {
 // The returned Record is reused by the Reader and overwritten by each call to
 // Next. Its fields are zero-copy views into the Reader's internal buffer and
 // are valid only until the next call to Next, like encoding/csv's ReuseRecord
-// mode. Copy a field with slices.Clone, or convert it to a string, if it must
+// mode. Copy a field with Record.Copy, or convert it to a string, if it must
 // outlive the read loop.
 func (r *Reader) Next() (*Record, error) {
-	r.fields = r.fields[:0]
+	if r.err != nil {
+		return nil, r.err
+	}
 	for {
 		recEnd, nlLen, complete, err := r.scan()
 		if err != nil {
+			r.err = err
 			return nil, err
 		}
 		if complete {
@@ -83,33 +112,40 @@ func (r *Reader) Next() (*Record, error) {
 				r.start = recEnd + nlLen
 				continue
 			}
-			r.rec.fields = r.decode(r.start, recEnd)
+			r.rec.fields = r.decode()
 			r.start = recEnd + nlLen
 			return &r.rec, nil
 		}
 		if r.eof {
-			if r.start == r.end {
-				return nil, io.EOF
-			}
-			// Final record without a trailing newline.
-			r.rec.fields = r.decode(r.start, r.end)
-			r.start = r.end
-			return &r.rec, nil
+			return nil, io.EOF
 		}
 		if err := r.fill(); err != nil {
+			r.err = err
 			return nil, err
 		}
 	}
 }
 
-// scan locates the end of the next record starting at r.start. It returns the
-// index of the line terminator, the terminator length (1 or 2 for CRLF), and
+// Error returns the first error encountered while reading, or nil if none has
+// occurred. io.EOF is normal termination and is not treated as an error, so
+// Error returns nil after a record stream has been read to completion. A
+// Reader configured with an invalid delimiter is failed from the start.
+func (r *Reader) Error() error {
+	return r.err
+}
+
+// scan locates the end of the next record starting at r.start, recording the
+// boundary of each field into r.fieldSpans as it goes. It returns the index
+// of the line terminator, the terminator length (1 or 2 for CRLF), and
 // whether a complete record was found. A (false, nil) result means the record
-// spans the current buffer and more data is needed.
+// spans the current buffer and more data is needed; when eof is set it means
+// no data remains and Next returns io.EOF.
 func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
+	r.fieldSpans = r.fieldSpans[:0]
 	pos := r.start
 	fieldStart := r.start
 	inQuotes := false
+	closedAt := -1 // position of the current field's closing quote, if closed
 
 	for pos < r.end {
 		c := r.buf[pos]
@@ -120,7 +156,7 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 					// Trailing '\r' at EOF is a stripped terminator, even
 					// inside quotes, matching the standard library.
 					if r.lazyQuotes {
-						return pos, 1, true, nil
+						return r.recordField(pos, 1, fieldStart, pos, closedAt == pos-1)
 					}
 					return 0, 0, false, ErrQuote
 				}
@@ -135,12 +171,14 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 					continue
 				case r.delimiter, '\n':
 					inQuotes = false // closing quote
+					closedAt = pos
 					pos++
 					continue
 				case '\r':
 					if pos+2 < r.end {
 						if r.buf[pos+2] == '\n' {
 							inQuotes = false // closing quote before CRLF
+							closedAt = pos
 							pos++
 							continue
 						}
@@ -154,6 +192,7 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 						// The '\r' is the last byte of input; the stdlib
 						// strips it, so the quote closes the field.
 						inQuotes = false
+						closedAt = pos
 						pos++
 						continue
 					}
@@ -170,6 +209,7 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 			// arrive. At EOF it closes the field.
 			if r.eof {
 				inQuotes = false
+				closedAt = pos
 				pos++
 				continue
 			}
@@ -189,14 +229,16 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 			}
 			return 0, 0, false, ErrBareQuote
 		case r.delimiter:
+			r.recordSpan(fieldStart, pos, closedAt == pos-1)
 			pos++
 			fieldStart = pos
+			closedAt = -1
 		case '\n':
-			return pos, 1, true, nil
+			return r.recordField(pos, 1, fieldStart, pos, closedAt == pos-1)
 		case '\r':
 			if pos+1 < r.end {
 				if r.buf[pos+1] == '\n' {
-					return pos, 2, true, nil
+					return r.recordField(pos, 2, fieldStart, pos, closedAt == pos-1)
 				}
 				pos++ // bare '\r' is a regular byte, not a terminator
 				continue
@@ -204,7 +246,7 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 			// '\r' is the last buffered byte; a following '\n' may arrive in
 			// the next chunk. At EOF it is a stripped terminator.
 			if r.eof {
-				return pos, 1, true, nil
+				return r.recordField(pos, 1, fieldStart, pos, closedAt == pos-1)
 			}
 			return 0, 0, false, nil // need more data
 		default:
@@ -212,93 +254,47 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 		}
 	}
 
-	if inQuotes {
-		if r.eof {
+	if r.eof {
+		if pos == r.start {
+			// No data at all in this buffer; Next reports io.EOF.
+			return 0, 0, false, nil
+		}
+		if inQuotes {
 			if r.lazyQuotes {
-				return 0, 0, false, nil // unterminated quote tolerated
+				return r.recordField(r.end, 0, fieldStart, r.end, closedAt == r.end-1)
 			}
 			return 0, 0, false, ErrQuote
 		}
-		return 0, 0, false, nil
+		return r.recordField(r.end, 0, fieldStart, r.end, closedAt == r.end-1)
 	}
 	return 0, 0, false, nil
 }
 
-// decode parses fields of the complete record buf[start:recEnd] into r.fields,
-// decoding quoted fields in place. The quote handling mirrors scan so that
-// field boundaries are identical.
-func (r *Reader) decode(start, recEnd int) [][]byte {
-	r.fields = r.fields[:0]
-	pos := start
-	fieldStart := start
-	inQuotes := false
-	closedAt := -1 // position of the current field's closing quote, if closed
+// recordSpan records the field buf[fieldStart:pos] into r.fieldSpans. closed
+// reports whether the field ends with a genuine closing quote.
+func (r *Reader) recordSpan(fieldStart, pos int, closed bool) {
+	r.fieldSpans = append(r.fieldSpans, fieldSpan{start: fieldStart, end: pos, closed: closed})
+}
 
-	for pos < recEnd {
-		c := r.buf[pos]
-		if inQuotes {
-			if c != '"' {
-				pos++
-				continue
-			}
-			if pos+1 < recEnd && r.buf[pos+1] == '"' {
-				pos += 2 // escaped quote
-				continue
-			}
-			if pos+1 < recEnd {
-				switch r.buf[pos+1] {
-				case r.delimiter, '\n':
-					inQuotes = false
-					closedAt = pos
-					pos++
-					continue
-				case '\r':
-					if pos+2 < recEnd && r.buf[pos+2] == '\n' {
-						inQuotes = false
-						closedAt = pos
-						pos++
-						continue
-					}
-					if r.lazyQuotes {
-						pos++
-						continue
-					}
-					inQuotes = false
-					closedAt = pos
-					pos++
-					continue
-				default:
-					if r.lazyQuotes {
-						pos++
-						continue
-					}
-					inQuotes = false
-					closedAt = pos
-					pos++
-					continue
-				}
-			}
-			inQuotes = false // closing quote at end of record
-			closedAt = pos
-			pos++
-			continue
-		}
-		switch c {
-		case '"':
-			if pos == fieldStart {
-				inQuotes = true
-			}
-			pos++
-		case r.delimiter:
-			r.appendField(fieldStart, pos, closedAt == pos-1)
-			pos++
-			fieldStart = pos
-			closedAt = -1
-		default:
-			pos++
-		}
+// recordField records the final field of the record ending at recEnd with a
+// terminator of length nlLen (0 for a final record without a trailing
+// newline) and returns a complete record. A blank line records no fields and
+// is skipped by Next.
+func (r *Reader) recordField(recEnd, nlLen int, fieldStart, pos int, closed bool) (int, int, bool, error) {
+	if pos != fieldStart || len(r.fieldSpans) != 0 {
+		r.recordSpan(fieldStart, pos, closed)
 	}
-	r.appendField(fieldStart, recEnd, closedAt == recEnd-1)
+	return recEnd, nlLen, true, nil
+}
+
+// decode converts the spans recorded by scan into r.fields, decoding quoted
+// fields in place.
+func (r *Reader) decode() [][]byte {
+	r.fields = r.fields[:0]
+	for i := range r.fieldSpans {
+		s := &r.fieldSpans[i]
+		r.appendField(s.start, s.end, s.closed)
+	}
 	return r.fields
 }
 
@@ -357,6 +353,9 @@ func (r *Reader) fill() error {
 			return nil
 		}
 		return err
+	}
+	if n == 0 {
+		return io.ErrNoProgress
 	}
 	return nil
 }

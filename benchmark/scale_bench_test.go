@@ -15,7 +15,7 @@ import (
 // BenchmarkScale compares zerocsv against encoding/csv at fixed row counts,
 // one write of n rows per iteration. Run with:
 //
-//	go test -bench BenchmarkScale -benchmem ./benchmark_test
+//	go test -bench BenchmarkScale -benchmem ./benchmark
 //
 // ns/op gives per-write cost (n rows), allocs/op and B/op give the allocation
 // profile for writing n rows. Throughput is n / (ns/op).
@@ -38,7 +38,7 @@ func BenchmarkScale(b *testing.B) {
 }
 
 func writeZerocsv(w io.Writer, n int) {
-	zw := zerocsv.New(w)
+	zw := zerocsv.NewWriter(w)
 	cols := make([]zerocsv.Column, 6)
 	ts := time.Date(2026, 8, 17, 12, 34, 56, 0, time.UTC)
 	for i := 0; i < n; i++ {

@@ -25,7 +25,7 @@ func main() {
 
 func basic() {
 	fmt.Println("--- basic ---")
-	w := zerocsv.New(os.Stdout)
+	w := zerocsv.NewWriter(os.Stdout)
 
 	_ = w.Write(zerocsv.ColumnString("name"), zerocsv.ColumnString("age"))
 	_ = w.Write(zerocsv.ColumnString("alice"), zerocsv.ColumnInt(30))
@@ -34,7 +34,7 @@ func basic() {
 
 func mixed() {
 	fmt.Println("--- mixed types ---")
-	w := zerocsv.New(os.Stdout)
+	w := zerocsv.NewWriter(os.Stdout)
 
 	_ = w.Write(
 		zerocsv.ColumnInt(42),
@@ -47,7 +47,7 @@ func mixed() {
 
 func writeAll() {
 	fmt.Println("--- WriteAll ---")
-	w := zerocsv.New(os.Stdout)
+	w := zerocsv.NewWriter(os.Stdout)
 
 	_ = w.WriteAll([][]zerocsv.Column{
 		{zerocsv.ColumnString("a"), zerocsv.ColumnInt(1)},
@@ -58,7 +58,7 @@ func writeAll() {
 
 func timeColumn() {
 	fmt.Println("--- time ---")
-	w := zerocsv.New(os.Stdout)
+	w := zerocsv.NewWriter(os.Stdout)
 
 	_ = w.Write(
 		zerocsv.ColumnTime(time.Unix(0, 0).UTC(), time.RFC3339),
@@ -69,7 +69,7 @@ func timeColumn() {
 
 func customDelimiter() {
 	fmt.Println("--- TSV delimiter ---")
-	w := zerocsv.New(os.Stdout, zerocsv.WithDelimiter('\t'))
+	w := zerocsv.NewWriter(os.Stdout, zerocsv.WithDelimiter('\t'))
 
 	_ = w.Write(zerocsv.ColumnString("a"), zerocsv.ColumnInt(1))
 	_ = w.Flush()
@@ -77,7 +77,7 @@ func customDelimiter() {
 
 func crlf() {
 	fmt.Println("--- CRLF ---")
-	w := zerocsv.New(os.Stdout, zerocsv.WithCRLF())
+	w := zerocsv.NewWriter(os.Stdout, zerocsv.WithCRLF())
 
 	_ = w.Write(zerocsv.ColumnString("a"), zerocsv.ColumnString("b"))
 	_ = w.Flush()
@@ -85,7 +85,7 @@ func crlf() {
 
 func zeroAllocation() {
 	fmt.Println("--- zero allocation (reused row) ---")
-	w := zerocsv.New(os.Stdout)
+	w := zerocsv.NewWriter(os.Stdout)
 
 	// Reuse a single []Column across writes to keep the hot path
 	// allocation-free.

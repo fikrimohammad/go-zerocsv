@@ -1,6 +1,7 @@
 package zerocsv
 
 import (
+	"bytes"
 	"encoding/csv"
 	"io"
 	"reflect"
@@ -20,11 +21,7 @@ func readAllZerocsv(t *testing.T, input string, opts ...Option) ([][]string, err
 		if err != nil {
 			return rows, err
 		}
-		row := make([]string, rec.Len())
-		for i := 0; i < rec.Len(); i++ {
-			row[i] = string(rec.ValueAt(i)) // string() copies: owned
-		}
-		rows = append(rows, row)
+		rows = append(rows, rec.Copy()) // Copy: owned strings
 	}
 }
 
@@ -263,6 +260,74 @@ func TestRecord(t *testing.T) {
 	}
 }
 
+func TestRecordCopyOwnsData(t *testing.T) {
+	r := NewReader(strings.NewReader("a,b,c\n1,2,3\n"))
+	rec, err := r.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	got := rec.Copy()
+	if want := []string{"a", "b", "c"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Copy() = %q, want %q", got, want)
+	}
+	// Advancing the reader must not disturb the copied strings.
+	if _, err := r.Next(); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if want := []string{"a", "b", "c"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Copy() after advancing reader = %q, want %q", got, want)
+	}
+}
+
+func TestReaderInvalidDelimiter(t *testing.T) {
+	for _, d := range []byte{0, '"', '\r', '\n'} {
+		r := NewReader(strings.NewReader("a,b\n"), WithDelimiter(d))
+		if err := r.Error(); err == nil {
+			t.Fatalf("Error() = nil for delimiter %d, want ErrInvalidDelim", d)
+		}
+		if _, err := r.Next(); err == nil {
+			t.Fatalf("Next() = nil error for delimiter %d, want ErrInvalidDelim", d)
+		}
+	}
+}
+
+func TestWriteReadRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	rows := [][]Column{
+		{ColumnString("a,b"), ColumnString(`quote"inside`), ColumnString("line\nbreak")},
+		{ColumnString(""), ColumnInt(42), ColumnBool(true)},
+		{ColumnFloat64(1.5), ColumnUint(7), ColumnString("semi;colon")},
+	}
+	if err := w.WriteAll(rows); err != nil {
+		t.Fatalf("WriteAll: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	r := NewReader(&buf)
+	var got [][]string
+	for {
+		rec, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		got = append(got, rec.Copy())
+	}
+	want := [][]string{
+		{"a,b", `quote"inside`, "line\nbreak"},
+		{"", "42", "true"},
+		{"1.5", "7", "semi;colon"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip = %q, want %q", got, want)
+	}
+}
+
 func TestReaderZeroAllocs(t *testing.T) {
 	var sb strings.Builder
 	for i := 0; i < 200; i++ {
@@ -282,6 +347,21 @@ func TestReaderZeroAllocs(t *testing.T) {
 		_ = rec.Len()
 	}); got != 0 {
 		t.Fatalf("Next allocated %v times per run, want 0", got)
+	}
+}
+
+// noProgressReader always reports (0, nil), exercising the no-progress guard
+// in fill.
+type noProgressReader struct{}
+
+func (noProgressReader) Read(p []byte) (int, error) {
+	return 0, nil
+}
+
+func TestReadNoProgress(t *testing.T) {
+	r := NewReader(noProgressReader{})
+	if _, err := r.Next(); err != io.ErrNoProgress {
+		t.Fatalf("Next() error = %v, want io.ErrNoProgress", err)
 	}
 }
 

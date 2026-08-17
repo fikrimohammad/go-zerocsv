@@ -11,12 +11,8 @@ import (
 	"unicode/utf8"
 )
 
-// errInvalidDelim is returned for a delimiter that would corrupt the CSV
-// structure.
-var errInvalidDelim = errors.New("zerocsv: invalid field delimiter")
-
-// errEmptyRecord is returned by Write when no columns are provided.
-var errEmptyRecord = errors.New("zerocsv: empty record")
+// ErrEmptyRecord is returned by Write when no columns are provided.
+var ErrEmptyRecord = errors.New("zerocsv: empty record")
 
 // initialScratchSize pre-sizes the numeric/time scratch buffer. It covers the
 // longest common fields — int64/uint64 min/max (20 bytes) and RFC3339 time
@@ -24,12 +20,17 @@ var errEmptyRecord = errors.New("zerocsv: empty record")
 // with 'f' can exceed this and grow the buffer lazily.
 const initialScratchSize = 32
 
+// bufioDefaultSize is bufio.NewWriter's default buffer size. A *bufio.Writer
+// at least this large is reused directly instead of being wrapped again.
+const bufioDefaultSize = 4096
+
 // Writer writes CSV records with zero allocations per write.
 //
-// The bufio.Writer and the numeric scratch buffer are allocated once in New
-// and reused for the lifetime of the Writer. Write/WriteAll perform no heap
-// allocations on the hot path as long as the caller reuses a []Column slice
-// (e.g. Write(row...)) rather than passing freshly constructed variadic args.
+// The bufio.Writer and the numeric scratch buffer are allocated once in
+// NewWriter and reused for the lifetime of the Writer. Write/WriteAll perform
+// no heap allocations on the hot path as long as the caller reuses a []Column
+// slice (e.g. Write(row...)) rather than passing freshly constructed variadic
+// args.
 type Writer struct {
 	w       *bufio.Writer
 	err     error
@@ -38,34 +39,39 @@ type Writer struct {
 	scratch []byte
 }
 
-// New returns a Writer that writes CSV records to w, applying opts. If w is
-// already a *bufio.Writer with a large enough buffer, it is reused directly.
-func New(w io.Writer, opts ...Option) *Writer {
+// NewWriter returns a Writer that writes CSV records to w, applying opts. If
+// w is already a *bufio.Writer with a buffer at least as large as the default
+// (4096 bytes), it is reused directly rather than being wrapped again.
+func NewWriter(w io.Writer, opts ...Option) *Writer {
 	o := defaultOptions()
 	for _, opt := range opts {
 		opt(o)
 	}
 	wr := &Writer{
-		w:       bufio.NewWriter(w),
 		comma:   o.delimiter,
 		useCRLF: o.useCRLF,
 		scratch: make([]byte, 0, initialScratchSize),
 	}
+	if bw, ok := w.(*bufio.Writer); ok && bw.Size() >= bufioDefaultSize {
+		wr.w = bw
+	} else {
+		wr.w = bufio.NewWriter(w)
+	}
 	if !validDelim(o.delimiter) {
-		wr.err = errInvalidDelim
+		wr.err = ErrInvalidDelim
 	}
 	return wr
 }
 
 // Write writes cols as a single CSV record to the underlying writer. It
-// returns errEmptyRecord if cols is empty, or the first error encountered
+// returns ErrEmptyRecord if cols is empty, or the first error encountered
 // while writing the record.
 func (w *Writer) Write(cols ...Column) error {
 	if w.err != nil {
 		return w.err
 	}
 	if len(cols) == 0 {
-		return errEmptyRecord
+		return ErrEmptyRecord
 	}
 	for i := range cols {
 		if i > 0 {

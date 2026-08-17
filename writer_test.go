@@ -52,7 +52,7 @@ func TestColumnIntegerWidths(t *testing.T) {
 	}
 	want := []string{"-8", "-16", "-32", "-64", "8", "16", "32", "64", "2989"}
 	var buf bytes.Buffer
-	w := New(&buf)
+	w := NewWriter(&buf)
 	for i, c := range cases {
 		if err := w.Write(c); err != nil {
 			t.Fatalf("case %d: %v", i, err)
@@ -79,7 +79,7 @@ func TestColumnIntegerWidths(t *testing.T) {
 
 func TestWriteBasic(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf)
+	w := NewWriter(&buf)
 	if err := w.Write(ColumnString("a"), ColumnString("b"), ColumnString("c")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -93,9 +93,9 @@ func TestWriteBasic(t *testing.T) {
 
 func TestWriteEmptyRecord(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf)
-	if err := w.Write(); err != errEmptyRecord {
-		t.Fatalf("Write() error = %v, want %v", err, errEmptyRecord)
+	w := NewWriter(&buf)
+	if err := w.Write(); err != ErrEmptyRecord {
+		t.Fatalf("Write() error = %v, want %v", err, ErrEmptyRecord)
 	}
 	if err := w.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
@@ -107,7 +107,7 @@ func TestWriteEmptyRecord(t *testing.T) {
 
 func TestWriteNumbers(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf)
+	w := NewWriter(&buf)
 	cols := []Column{
 		ColumnInt(-42),
 		ColumnInt64(9223372036854775807),
@@ -133,7 +133,7 @@ func TestWriteNumbers(t *testing.T) {
 
 func TestWriteBytes(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf)
+	w := NewWriter(&buf)
 	if err := w.Write(ColumnBytes([]byte("a,b")), ColumnBytes([]byte("plain"))); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestWriteBytes(t *testing.T) {
 
 func TestWriteFloat32(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf)
+	w := NewWriter(&buf)
 	if err := w.Write(ColumnFloat32(0.1), ColumnFloat32(2.5), ColumnFloat32(1.0/3.0)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -161,13 +161,13 @@ func TestWriteFloat32(t *testing.T) {
 
 func TestWithDelimiterInvalid(t *testing.T) {
 	for _, c := range []byte{0, '"', '\r', '\n'} {
-		w := New(io.Discard, WithDelimiter(c))
-		if err := w.Error(); err != errInvalidDelim {
-			t.Errorf("WithDelimiter(%q): got err %v, want %v", c, err, errInvalidDelim)
+		w := NewWriter(io.Discard, WithDelimiter(c))
+		if err := w.Error(); err != ErrInvalidDelim {
+			t.Errorf("WithDelimiter(%q): got err %v, want %v", c, err, ErrInvalidDelim)
 		}
 	}
 	for _, c := range []byte{',', '\t', ';', '|', ' '} {
-		w := New(io.Discard, WithDelimiter(c))
+		w := NewWriter(io.Discard, WithDelimiter(c))
 		if err := w.Error(); err != nil {
 			t.Errorf("WithDelimiter(%q): unexpected error %v", c, err)
 		}
@@ -176,7 +176,7 @@ func TestWithDelimiterInvalid(t *testing.T) {
 
 func TestWriteAll(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf)
+	w := NewWriter(&buf)
 	rows := [][]Column{
 		{ColumnString("a"), ColumnInt(1)},
 		{ColumnString("c"), ColumnFloat64(2.5)},
@@ -196,7 +196,7 @@ func TestWriteAll(t *testing.T) {
 
 func TestWriteQuoting(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf)
+	w := NewWriter(&buf)
 	rows := [][]Column{
 		{ColumnString("simple"), ColumnString("field")},
 		{ColumnString("comma,inside"), ColumnString("plain")},
@@ -225,7 +225,7 @@ func TestWriteQuoting(t *testing.T) {
 
 func TestWriteAnyQuotes(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf)
+	w := NewWriter(&buf)
 	if err := w.Write(ColumnAny("a,b"), ColumnAny("plain")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestFieldNeedsQuotes(t *testing.T) {
 
 func TestWriteCustomComma(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf, WithDelimiter('\t'))
+	w := NewWriter(&buf, WithDelimiter('\t'))
 	if err := w.Write(ColumnString("a"), ColumnInt(1), ColumnString("b,c")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestWriteCustomComma(t *testing.T) {
 
 func TestWriteCRLF(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf, WithCRLF())
+	w := NewWriter(&buf, WithCRLF())
 	if err := w.Write(ColumnString("a"), ColumnString("b")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestWriteCRLF(t *testing.T) {
 
 func TestWriteCombinedOptions(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf, WithDelimiter(';'), WithCRLF())
+	w := NewWriter(&buf, WithDelimiter(';'), WithCRLF())
 	if err := w.Write(ColumnString("a"), ColumnString("b;c")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestWriteCombinedOptions(t *testing.T) {
 
 func TestWriteTime(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf)
+	w := NewWriter(&buf)
 	loc := time.FixedZone("", 7*3600)
 	tm := time.Date(2026, 8, 17, 12, 34, 56, 0, loc)
 	if err := w.Write(ColumnTime(tm, time.RFC3339)); err != nil {
@@ -324,7 +324,7 @@ func TestWriteTime(t *testing.T) {
 
 func TestWriteTimeLayout(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf)
+	w := NewWriter(&buf)
 	tm := time.Date(2026, 8, 17, 12, 34, 56, 0, time.UTC)
 	if err := w.Write(ColumnTime(tm, "2006-01-02"), ColumnTime(tm, "15:04:05")); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -339,7 +339,7 @@ func TestWriteTimeLayout(t *testing.T) {
 
 func TestWriteTimeCommaInLayout(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf)
+	w := NewWriter(&buf)
 	tm := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
 	if err := w.Write(ColumnTime(tm, "2006,01,02")); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -365,7 +365,7 @@ func (f *failWriter) Write(p []byte) (int, error) {
 }
 
 func TestErrorSticky(t *testing.T) {
-	w := New(&failWriter{})
+	w := NewWriter(&failWriter{})
 	// small writes are buffered, so the underlying error surfaces on Flush
 	if err := w.Write(ColumnString("a"), ColumnString("b")); err != nil {
 		t.Fatalf("unexpected error before flush: %v", err)
@@ -390,7 +390,7 @@ func TestErrorDuringWrite(t *testing.T) {
 	for i := range big {
 		big[i] = 'x'
 	}
-	w := New(&failWriter{})
+	w := NewWriter(&failWriter{})
 	if err := w.Write(ColumnBytes(big)); err == nil {
 		t.Fatal("expected error from oversized write")
 	}
@@ -411,7 +411,7 @@ func TestRoundTripAgainstEncodingCSV(t *testing.T) {
 		{" tab", "trailing "},
 	}
 	var ours, std bytes.Buffer
-	wo := New(&ours)
+	wo := NewWriter(&ours)
 	ws := csv.NewWriter(&std)
 	for _, r := range records {
 		cols := make([]Column, len(r))
@@ -437,7 +437,7 @@ func TestRoundTripAgainstEncodingCSV(t *testing.T) {
 func TestWriteWithBufioUnderlying(t *testing.T) {
 	var buf bytes.Buffer
 	outer := bufio.NewWriter(&buf)
-	w := New(outer)
+	w := NewWriter(outer)
 	if err := w.WriteAll([][]Column{
 		{ColumnString("a"), ColumnString("b,c")},
 		{ColumnInt(1), ColumnBool(true)},
@@ -469,7 +469,7 @@ func TestWriteZeroAllocs(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			w := New(io.Discard)
+			w := NewWriter(io.Discard)
 			if got := testing.AllocsPerRun(1000, func() {
 				if err := w.Write(tc.cols...); err != nil {
 					t.Fatalf("Write: %v", err)
@@ -484,7 +484,7 @@ func TestWriteZeroAllocs(t *testing.T) {
 func TestWriteZeroAllocsBufioUnderlying(t *testing.T) {
 	cols := []Column{ColumnString("alpha"), ColumnInt(42), ColumnFloat64(3.14), ColumnBool(true)}
 	outer := bufio.NewWriter(io.Discard)
-	w := New(outer)
+	w := NewWriter(outer)
 	if got := testing.AllocsPerRun(1000, func() {
 		if err := w.Write(cols...); err != nil {
 			t.Fatalf("Write: %v", err)
@@ -496,7 +496,7 @@ func TestWriteZeroAllocsBufioUnderlying(t *testing.T) {
 
 func TestFirstWriteZeroAllocs(t *testing.T) {
 	cols := []Column{ColumnInt(42), ColumnFloat64(3.14), ColumnTime(time.Unix(1, 0).UTC(), time.RFC3339), ColumnBool(true)}
-	w := New(io.Discard)
+	w := NewWriter(io.Discard)
 
 	runtime.GC()
 	var m0, m1 runtime.MemStats
@@ -525,7 +525,7 @@ func FuzzWriterConformance(f *testing.F) {
 		cols := []Column{ColumnString(a), ColumnString(b), ColumnString(c)}
 
 		var ours, std bytes.Buffer
-		wo := New(&ours)
+		wo := NewWriter(&ours)
 		ws := csv.NewWriter(&std)
 
 		if err := wo.Write(cols...); err != nil {

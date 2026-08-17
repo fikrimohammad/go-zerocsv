@@ -43,7 +43,7 @@ import (
 
 func main() {
 	var buf bytes.Buffer
-	w := zerocsv.New(&buf)
+	w := zerocsv.NewWriter(&buf)
 
 	w.Write(
 		zerocsv.ColumnString("name"),
@@ -100,10 +100,10 @@ concerns.
 
 ```go
 // Tab-separated values.
-w := zerocsv.New(&buf, zerocsv.WithDelimiter('\t'))
+w := zerocsv.NewWriter(&buf, zerocsv.WithDelimiter('\t'))
 
 // CRLF line endings instead of LF.
-w := zerocsv.New(&buf, zerocsv.WithCRLF())
+w := zerocsv.NewWriter(&buf, zerocsv.WithCRLF())
 
 // Tolerate malformed quoting instead of returning a parse error.
 r := zerocsv.NewReader(f, zerocsv.WithLazyQuotes())
