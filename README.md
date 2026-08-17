@@ -249,8 +249,8 @@ golangci-lint run ./...
 # Run tests with the race detector enabled
 go test -race -count=1 ./...
 
-# Smoke-test the fuzzers (anchor the pattern so it matches one target)
-go test -run='^$' -fuzz='^FuzzReaderConformance$' -fuzztime=30s ./...
+# Smoke-test the fuzzers (anchor the pattern; run in the package root)
+go test -run='^$' -fuzz='^FuzzReaderConformance$' -fuzztime=30s .
 ```
 
 ## License
