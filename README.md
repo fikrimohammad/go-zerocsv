@@ -154,6 +154,55 @@ for {
 }
 ```
 
+## Benchmarks
+
+Measured on an AMD Ryzen 5 8400F (12 threads), linux/amd64, Go 1.26.5.
+Run them yourself with:
+
+```bash
+go test -bench=. -benchmem ./benchmark
+```
+
+### Reading — full pass over a whole file
+
+Each iteration parses all `n` rows with a fresh reader; `MB/s` is throughput.
+
+| Rows | zerocsv ns/op | stdlib ns/op | zerocsv MB/s | stdlib MB/s | zerocsv allocs | stdlib allocs |
+| ---- | ------------: | -----------: | -----------: | ----------: | --------------: | -------------: |
+| 100K | 9.00ms | 10.90ms | 319.6 | 263.8 | 8 | 200,013 |
+| 500K | 45.4ms | 51.9ms | 316.7 | 277.2 | 8 | 1,000,013 |
+| 1M | 91.6ms | 102.9ms | 313.8 | 279.5 | 8 | 2,000,013 |
+| 5M | 446.6ms | 516.9ms | 321.9 | 278.1 | 8 | 10,000,013 |
+
+The reader allocates a constant 8 objects (internal buffer growth) regardless
+of how many rows are read, while `encoding/csv` allocates 2 objects per record
+(10M allocations for 5M rows, ~540 MB of garbage). Memory use stays flat
+because the reader keeps one reusable buffer; stdlib's footprint grows with
+file size.
+
+### Reading — per record
+
+| Benchmark | ns/op | B/op | allocs/op |
+| --------- | ----: | ---: | --------: |
+| zerocsv `Next` | 64.0 | 18 | 0 |
+| `encoding/csv` `Read` | 115.1 | 114 | 2 |
+
+### Writing — per record
+
+| Benchmark | ns/op | B/op | allocs/op |
+| --------- | ----: | ---: | --------: |
+| zerocsv `Write` (strings) | 67.2 | 0 | 0 |
+| `encoding/csv` `Write` (strings) | 57.1 | 0 | 0 |
+| zerocsv `Write` (mixed types) | 99.3 | 0 | 0 |
+| `encoding/csv` `Write` (mixed types) | 141.7 | 31 | 2 |
+| zerocsv `Write` (with time) | 148.0 | 0 | 0 |
+| `encoding/csv` `Write` (with time) | 202.5 | 54 | 3 |
+
+For pre-formatted strings both writers are allocation-free and comparable.
+When values need formatting, zerocsv formats into its own scratch buffer
+without allocating, so the mixed and time cases stay at 0 allocs/op while
+`encoding/csv` allocates for every `strconv`/`Format` call.
+
 ## Documentation
 
 Full API documentation and runnable examples are available on
