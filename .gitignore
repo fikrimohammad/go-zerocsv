@@ -1,0 +1,7 @@
+# Binaries and test artifacts
+*.exe
+*.test
+*.out
+
+# Fuzz cache and regenerable test data (seeds come from f.Add)
+testdata/

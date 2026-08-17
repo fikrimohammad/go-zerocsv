@@ -1,0 +1,232 @@
+package zerocsv
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"strconv"
+	"unicode"
+	"unicode/utf8"
+)
+
+// errInvalidDelim is returned for a delimiter that would corrupt the CSV
+// structure.
+var errInvalidDelim = errors.New("zerocsv: invalid field delimiter")
+
+// errEmptyRecord is returned by Write when no columns are provided.
+var errEmptyRecord = errors.New("zerocsv: empty record")
+
+// initialScratchSize pre-sizes the numeric/time scratch buffer. It covers the
+// longest common fields — int64/uint64 min/max (20 bytes) and RFC3339 time
+// (25 bytes) — so the first Write performs no allocation. Floats formatted
+// with 'f' can exceed this and grow the buffer lazily.
+const initialScratchSize = 32
+
+// Writer writes CSV records with zero allocations per write.
+//
+// The bufio.Writer and the numeric scratch buffer are allocated once in New
+// and reused for the lifetime of the Writer. Write/WriteAll perform no heap
+// allocations on the hot path as long as the caller reuses a []Column slice
+// (e.g. Write(row...)) rather than passing freshly constructed variadic args.
+type Writer struct {
+	w       *bufio.Writer
+	err     error
+	comma   byte
+	useCRLF bool
+	scratch []byte
+}
+
+// New returns a Writer that writes CSV records to w, applying opts. If w is
+// already a *bufio.Writer with a large enough buffer, it is reused directly.
+func New(w io.Writer, opts ...Option) *Writer {
+	o := defaultOptions()
+	for _, opt := range opts {
+		opt(o)
+	}
+	wr := &Writer{
+		w:       bufio.NewWriter(w),
+		comma:   o.delimiter,
+		useCRLF: o.useCRLF,
+		scratch: make([]byte, 0, initialScratchSize),
+	}
+	if !validDelim(o.delimiter) {
+		wr.err = errInvalidDelim
+	}
+	return wr
+}
+
+// Write writes cols as a single CSV record to the underlying writer. It
+// returns errEmptyRecord if cols is empty, or the first error encountered
+// while writing the record.
+func (w *Writer) Write(cols ...Column) error {
+	if w.err != nil {
+		return w.err
+	}
+	if len(cols) == 0 {
+		return errEmptyRecord
+	}
+	for i := range cols {
+		if i > 0 {
+			w.writeByte(w.comma)
+		}
+		w.writeColumn(&cols[i])
+	}
+	if w.useCRLF {
+		w.writeByte('\r')
+	}
+	w.writeByte('\n')
+	return w.err
+}
+
+// WriteAll writes each row of rows as a CSV record to the underlying writer
+// and returns the first error encountered, if any.
+func (w *Writer) WriteAll(rows [][]Column) error {
+	for _, row := range rows {
+		if err := w.Write(row...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Flush writes any buffered data to the underlying writer and returns the
+// first error encountered during Write, WriteAll or Flush, if any.
+func (w *Writer) Flush() error {
+	if w.err != nil {
+		return w.err
+	}
+	w.err = w.w.Flush()
+	return w.err
+}
+
+// Error returns the first error encountered during Write, WriteAll or Flush,
+// or nil if none has occurred.
+func (w *Writer) Error() error {
+	return w.err
+}
+
+func (w *Writer) writeColumn(c *Column) {
+	switch c.kind {
+	case columnString:
+		w.writeField(c.s)
+	case columnBytes:
+		w.writeFieldBytes(c.bs)
+	case columnInt:
+		w.scratch = strconv.AppendInt(w.scratch[:0], int64(c.n), 10)
+		w.writeBytes(w.scratch)
+	case columnUint:
+		w.scratch = strconv.AppendUint(w.scratch[:0], c.n, 10)
+		w.writeBytes(w.scratch)
+	case columnFloat:
+		w.scratch = strconv.AppendFloat(w.scratch[:0], math.Float64frombits(c.n), 'f', -1, 64)
+		w.writeBytes(w.scratch)
+	case columnFloat32:
+		w.scratch = strconv.AppendFloat(w.scratch[:0], math.Float64frombits(c.n), 'f', -1, 32)
+		w.writeBytes(w.scratch)
+	case columnBool:
+		if c.n != 0 {
+			w.writeString("true")
+		} else {
+			w.writeString("false")
+		}
+	case columnTime:
+		w.scratch = c.t.AppendFormat(w.scratch[:0], c.s)
+		w.writeFieldBytes(w.scratch)
+	case columnAny:
+		w.writeField(fmt.Sprint(c.v))
+	}
+}
+
+func (w *Writer) writeField(field string) {
+	if w.err != nil {
+		return
+	}
+	if !fieldNeedsQuotes(field, w.comma) {
+		w.writeString(field)
+		return
+	}
+	w.writeByte('"')
+	for i := 0; i < len(field); i++ {
+		c := field[i]
+		if c == '"' {
+			w.writeByte('"')
+		}
+		w.writeByte(c)
+	}
+	w.writeByte('"')
+}
+
+func (w *Writer) writeFieldBytes(field []byte) {
+	if w.err != nil {
+		return
+	}
+	if !bytesNeedsQuotes(field, w.comma) {
+		w.writeBytes(field)
+		return
+	}
+	w.writeByte('"')
+	for _, c := range field {
+		if c == '"' {
+			w.writeByte('"')
+		}
+		w.writeByte(c)
+	}
+	w.writeByte('"')
+}
+
+func fieldNeedsQuotes(field string, comma byte) bool {
+	if field == "" {
+		return false
+	}
+	if field == `\.` {
+		return true
+	}
+	for i := 0; i < len(field); i++ {
+		switch field[i] {
+		case comma, '"', '\r', '\n':
+			return true
+		}
+	}
+	r, _ := utf8.DecodeRuneInString(field)
+	return unicode.IsSpace(r)
+}
+
+func bytesNeedsQuotes(field []byte, comma byte) bool {
+	if len(field) == 0 {
+		return false
+	}
+	if len(field) == 2 && field[0] == '\\' && field[1] == '.' {
+		return true
+	}
+	for _, c := range field {
+		switch c {
+		case comma, '"', '\r', '\n':
+			return true
+		}
+	}
+	r, _ := utf8.DecodeRune(field)
+	return unicode.IsSpace(r)
+}
+
+func (w *Writer) writeString(s string) {
+	if w.err != nil {
+		return
+	}
+	_, w.err = w.w.WriteString(s)
+}
+
+func (w *Writer) writeBytes(p []byte) {
+	if w.err != nil {
+		return
+	}
+	_, w.err = w.w.Write(p)
+}
+
+func (w *Writer) writeByte(c byte) {
+	if w.err != nil {
+		return
+	}
+	w.err = w.w.WriteByte(c)
+}
