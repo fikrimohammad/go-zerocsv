@@ -3,6 +3,7 @@ package zerocsv
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -56,8 +57,8 @@ func TestReadAllAndScan(t *testing.T) {
 }
 
 func TestReadAllScanAllPrimitiveTypes(t *testing.T) {
-	input := "s,by,bs,i,i8,i16,i32,i64,u,u8,u16,u32,u64,p,f32,f64,b,a\n" +
-		"x,\"\",bytes,7,-8,300,-70000,5000000000,9,200,60000,4000000000,123,456,1.5,2.25,true,\"y\"\n"
+	input := "s,by,bs,i,i8,i16,i32,i64,u,u8,u16,u32,u64,p,f32,f64,b\n" +
+		"x,\"\",bytes,7,-8,300,-70000,5000000000,9,200,60000,4000000000,123,456,1.5,2.25,true\n"
 	records, err := NewReader(strings.NewReader(input)).ReadAll()
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
@@ -82,9 +83,8 @@ func TestReadAllScanAllPrimitiveTypes(t *testing.T) {
 		f32   float32
 		f64   float64
 		b     bool
-		a     any
 	)
-	if err := records[1].Scan(&s, &by, &bs, &i, &i8, &i16, &i32, &i64, &u, &u8, &u16, &u32, &u64, &p, &f32, &f64, &b, &a); err != nil {
+	if err := records[1].Scan(&s, &by, &bs, &i, &i8, &i16, &i32, &i64, &u, &u8, &u16, &u32, &u64, &p, &f32, &f64, &b); err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
 	if s != "x" || by != "" || string(bs) != "bytes" {
@@ -101,9 +101,6 @@ func TestReadAllScanAllPrimitiveTypes(t *testing.T) {
 	}
 	if b != true {
 		t.Fatalf("bool: %v", b)
-	}
-	if a != "y" {
-		t.Fatalf("any: %v", a)
 	}
 }
 
@@ -275,6 +272,47 @@ func TestReadAllThenReadContinues(t *testing.T) {
 	}
 	if rest[0].String(0) != "b" || rest[1].String(0) != "c" {
 		t.Fatalf("remaining = %q/%q, want b/c", rest[0].String(0), rest[1].String(0))
+	}
+}
+
+type testCustomDate struct {
+	year  int
+	month int
+	day   int
+}
+
+func (d *testCustomDate) ScanCSV(field []byte) error {
+	parts := strings.Split(string(field), "-")
+	if len(parts) != 3 {
+		return errors.New("invalid date format")
+	}
+	_, _ = fmt.Sscanf(string(field), "%d-%d-%d", &d.year, &d.month, &d.day)
+	return nil
+}
+
+func TestScanFieldScanner(t *testing.T) {
+	input := "2026-08-18,hello\n"
+	records, err := NewReader(strings.NewReader(input)).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	var d testCustomDate
+	var txt string
+	if err := records[0].Scan(&d, &txt); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if d.year != 2026 || d.month != 8 || d.day != 18 {
+		t.Fatalf("d = %+v, want 2026-08-18", d)
+	}
+	if txt != "hello" {
+		t.Fatalf("txt = %q, want hello", txt)
+	}
+
+	// Nil pointer safety
+	var nilScanner *testCustomDate
+	if err := records[0].Scan(nilScanner, &txt); err == nil {
+		t.Fatal("Scan with nil FieldScanner: want error")
 	}
 }
 

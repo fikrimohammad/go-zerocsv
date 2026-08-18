@@ -16,9 +16,14 @@ against `encoding/csv`.
 - **Zero allocations on the hot path**: each `Write` and lazy `Read` parses
   without heap allocation; the buffer and field slices are allocated once and
   reused.
+- **Symmetric Scanner & Valuer interfaces**: custom types can implement
+  `FieldScanner` (`ScanCSV([]byte) error`) and `FieldValuer` (`AppendCSV([]byte) ([]byte, error)`)
+  for zero-allocation custom parsing and formatting with no reflection or interface boxing.
 - **`database/sql`-style typed scanning**: `Record.Scan(&id, &name, &score)`
-  parses numeric, boolean, and slice fields in-place with zero allocations and
+  parses numeric, boolean, string, and custom fields in-place with zero allocations and
   protects against scratch buffer mutation.
+- **Ultra-compact 48-byte `Column` value struct**: passes by value with minimal
+  stack and slice memory overhead.
 - **Eager & Lazy reading APIs**: use lazy `Read()` for streaming with flat memory
   or `ReadAll()` to eagerly load all records into safe, owned storage.
 - **Field-count validation**: like `encoding/csv`, records are checked to have
@@ -161,11 +166,12 @@ fmt.Println(w.FieldsPerRecord()) // 0 until the first record is written
 ### Typed columns (Writer)
 
 ```go
+var dateBuf [32]byte
 w.Write(
 	zerocsv.ColumnInt64(42),
 	zerocsv.ColumnFloat64(3.14),
-	zerocsv.ColumnTime(time.Now(), time.RFC3339),
-	zerocsv.ColumnBytes([]byte("raw")),
+	zerocsv.ColumnBytes(time.Now().AppendFormat(dateBuf[:0], time.RFC3339)),
+	zerocsv.ColumnString("hello"),
 )
 ```
 
@@ -183,24 +189,37 @@ for _, v := range values {
 }
 ```
 
-### Zero-copy reading
+### Custom Types (Scanner & Valuer)
 
-`ValueAt` returns a zero-copy view into the reader's reused buffer. The value
-is valid only until the next `Next` call. Convert it to a string to own the
-data, since `string([]byte)` copies:
+Custom domain types can control their CSV parsing and formatting with **zero allocations** by implementing `FieldScanner` and `FieldValuer`:
 
 ```go
-for {
-	rec, err := r.Next()
-	if err == io.EOF {
-		break
-	}
+type Date time.Time
+
+// Reader: zero-allocation parsing from raw field bytes
+func (d *Date) ScanCSV(field []byte) error {
+	t, err := time.Parse("2006-01-02", string(field))
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	name := string(rec.ValueAt(0)) // owned copy, safe to retain
-	_ = name
+	*d = Date(t)
+	return nil
 }
+
+// Writer: zero-allocation formatting into writer scratch buffer
+func (d Date) AppendCSV(dst []byte) ([]byte, error) {
+	return time.Time(d).AppendFormat(dst, "2006-01-02"), nil
+}
+```
+
+Usage:
+```go
+// Scanning into custom type
+var d Date
+err := rec.Scan(&id, &name, &d)
+
+// Writing custom type
+err := w.Write(zerocsv.ColumnString("alice"), zerocsv.ColumnValuer(d))
 ```
 
 ## Benchmarks

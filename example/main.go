@@ -59,9 +59,10 @@ func timeColumn() {
 	fmt.Println("--- time ---")
 	w := zerocsv.NewWriter(os.Stdout)
 
+	var dateBuf [32]byte
 	_ = w.Write(
-		zerocsv.ColumnTime(time.Unix(0, 0).UTC(), time.RFC3339),
-		zerocsv.ColumnTime(time.Now(), "2006-01-02"),
+		zerocsv.ColumnBytes(time.Unix(0, 0).UTC().AppendFormat(dateBuf[:0], time.RFC3339)),
+		zerocsv.ColumnString(time.Now().Format("2006-01-02")),
 	)
 	_ = w.Flush()
 }

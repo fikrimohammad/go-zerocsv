@@ -3,8 +3,15 @@ package zerocsv
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 )
+
+// FieldScanner is implemented by custom types that can scan their value directly
+// from a raw CSV field byte slice.
+type FieldScanner interface {
+	ScanCSV(field []byte) error
+}
 
 // Record is a single CSV record parsed by Reader.
 //
@@ -81,7 +88,7 @@ func (rec Record) clone() Record {
 //   - *int, *int8, *int16, *int32, *int64: parses integer in-place (0 allocs)
 //   - *uint, *uint8, *uint16, *uint32, *uint64, *uintptr: parses unsigned integer in-place (0 allocs)
 //   - *float32, *float64: parses float in-place (0 allocs)
-//   - *any: stores field as a string
+//   - FieldScanner: delegates parsing to custom ScanCSV method (0 allocs)
 //
 // Scan returns an error if the number of destinations does not match Len(), if
 // any destination pointer is nil, or if parsing fails.
@@ -115,11 +122,6 @@ func scanField(dst any, field []byte) error {
 			return errors.New("destination pointer is nil")
 		}
 		*p = append((*p)[:0], field...)
-	case *any:
-		if p == nil {
-			return errors.New("destination pointer is nil")
-		}
-		*p = string(field)
 	case *bool:
 		if p == nil {
 			return errors.New("destination pointer is nil")
@@ -246,6 +248,11 @@ func scanField(dst any, field []byte) error {
 			return err
 		}
 		*p = v
+	case FieldScanner:
+		if p == nil || (reflect.ValueOf(p).Kind() == reflect.Pointer && reflect.ValueOf(p).IsNil()) {
+			return errors.New("destination pointer is nil")
+		}
+		return p.ScanCSV(field)
 	default:
 		return fmt.Errorf("cannot scan into %T", dst)
 	}

@@ -41,13 +41,14 @@ func writeZerocsv(w io.Writer, n int) {
 	zw := zerocsv.NewWriter(w)
 	cols := make([]zerocsv.Column, 6)
 	ts := time.Date(2026, 8, 17, 12, 34, 56, 0, time.UTC)
+	var timeScratch [32]byte
 	for i := 0; i < n; i++ {
 		cols[0] = zerocsv.ColumnInt(i)
 		cols[1] = zerocsv.ColumnString(benchNames[i%len(benchNames)])
 		cols[2] = zerocsv.ColumnInt64(int64(i) * 1000)
 		cols[3] = zerocsv.ColumnFloat64(float64(i) * 0.5)
 		cols[4] = zerocsv.ColumnBool(i%2 == 0)
-		cols[5] = zerocsv.ColumnTime(ts, time.RFC3339)
+		cols[5] = zerocsv.ColumnBytes(ts.AppendFormat(timeScratch[:0], time.RFC3339))
 		_ = zw.Write(cols...)
 	}
 	_ = zw.Flush()

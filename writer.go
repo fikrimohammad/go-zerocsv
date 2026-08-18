@@ -3,13 +3,18 @@ package zerocsv
 import (
 	"bufio"
 	"errors"
-	"fmt"
 	"io"
 	"math"
 	"strconv"
 	"unicode"
 	"unicode/utf8"
 )
+
+// FieldValuer is implemented by custom types that can append their CSV field
+// representation directly into a scratch buffer with zero heap allocations.
+type FieldValuer interface {
+	AppendCSV(dst []byte) ([]byte, error)
+}
 
 // ErrEmptyRecord is returned by Write when no columns are provided.
 var ErrEmptyRecord = errors.New("zerocsv: empty record")
@@ -149,10 +154,8 @@ func (w *Writer) FieldsPerRecord() int {
 
 func (w *Writer) writeColumn(c *Column) {
 	switch c.kind {
-	case columnString:
+	case columnString, columnBytes:
 		w.writeField(c.s)
-	case columnBytes:
-		w.writeFieldBytes(c.bs)
 	case columnInt:
 		w.scratch = strconv.AppendInt(w.scratch[:0], int64(c.n), 10)
 		w.writeBytes(w.scratch)
@@ -171,15 +174,18 @@ func (w *Writer) writeColumn(c *Column) {
 		} else {
 			w.writeString("false")
 		}
-	case columnTime:
-		w.scratch = c.t.AppendFormat(w.scratch[:0], c.s)
-		w.writeFieldBytes(w.scratch)
-	case columnAny:
-		if c.v == nil {
+	case columnValuer:
+		if c.valuer == nil {
 			w.writeField("")
-		} else {
-			w.writeField(fmt.Sprint(c.v))
+			return
 		}
+		b, err := c.valuer.AppendCSV(w.scratch[:0])
+		if err != nil {
+			w.err = err
+			return
+		}
+		w.scratch = b
+		w.writeField(bytesToString(w.scratch))
 	}
 }
 
@@ -202,24 +208,6 @@ func (w *Writer) writeField(field string) {
 	w.writeByte('"')
 }
 
-func (w *Writer) writeFieldBytes(field []byte) {
-	if w.err != nil {
-		return
-	}
-	if !bytesNeedsQuotes(field, w.comma) {
-		w.writeBytes(field)
-		return
-	}
-	w.writeByte('"')
-	for _, c := range field {
-		if c == '"' {
-			w.writeByte('"')
-		}
-		w.writeByte(c)
-	}
-	w.writeByte('"')
-}
-
 func fieldNeedsQuotes(field string, comma byte) bool {
 	if field == "" {
 		return false
@@ -234,23 +222,6 @@ func fieldNeedsQuotes(field string, comma byte) bool {
 		}
 	}
 	r, _ := utf8.DecodeRuneInString(field)
-	return unicode.IsSpace(r)
-}
-
-func bytesNeedsQuotes(field []byte, comma byte) bool {
-	if len(field) == 0 {
-		return false
-	}
-	if len(field) == 2 && field[0] == '\\' && field[1] == '.' {
-		return true
-	}
-	for _, c := range field {
-		switch c {
-		case comma, '"', '\r', '\n':
-			return true
-		}
-	}
-	r, _ := utf8.DecodeRune(field)
 	return unicode.IsSpace(r)
 }
 
