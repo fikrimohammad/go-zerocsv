@@ -12,9 +12,11 @@ type Option func(*options)
 // options holds configuration shared by the Writer and Reader. Fields that
 // only apply to one of the two are simply ignored by the other.
 type options struct {
-	delimiter  byte
-	useCRLF    bool
-	lazyQuotes bool
+	delimiter       byte
+	useCRLF         bool
+	lazyQuotes      bool
+	fieldsPerRecord int
+	maxBuf          int
 }
 
 func defaultOptions() *options {
@@ -44,6 +46,35 @@ func WithCRLF() Option {
 func WithLazyQuotes() Option {
 	return func(o *options) {
 		o.lazyQuotes = true
+	}
+}
+
+// WithFieldsPerRecord sets the expected number of fields per record, applying
+// to both the Reader and the Writer.
+//
+// If n is positive, Next and Write require every record to have exactly n
+// fields and return ErrFieldCount otherwise. If n is 0, the count is taken
+// from the first record and enforced on all subsequent ones, like
+// encoding/csv's default. If n is negative, no check is made and records may
+// have a variable number of fields. Blank lines read by the Reader never take
+// part in the check.
+//
+// Like encoding/csv, ErrFieldCount is non-fatal: the mismatched record is
+// still returned (Reader) or written (Writer), and reading or writing may
+// continue.
+func WithFieldsPerRecord(n int) Option {
+	return func(o *options) {
+		o.fieldsPerRecord = n
+	}
+}
+
+// WithMaxBuffer caps the Reader's internal buffer at n bytes. A record larger
+// than n cannot be parsed in memory, so Next returns ErrRecordTooLarge rather
+// than letting the buffer grow without bound. A non-positive n means no limit
+// (the default).
+func WithMaxBuffer(n int) Option {
+	return func(o *options) {
+		o.maxBuf = n
 	}
 }
 

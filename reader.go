@@ -16,6 +16,9 @@ type Reader struct {
 	delimiter  byte
 	lazyQuotes bool
 
+	fieldsPerRecord int // expected fields per record; see WithFieldsPerRecord
+	maxBuf          int // buffer size cap; see WithMaxBuffer
+
 	buf   []byte // reusable input buffer
 	start int    // first unprocessed byte
 	end   int    // number of valid bytes in buf
@@ -77,9 +80,11 @@ func NewReader(r io.Reader, opts ...Option) *Reader {
 		opt(o)
 	}
 	rd := &Reader{
-		r:          r,
-		delimiter:  o.delimiter,
-		lazyQuotes: o.lazyQuotes,
+		r:               r,
+		delimiter:       o.delimiter,
+		lazyQuotes:      o.lazyQuotes,
+		fieldsPerRecord: o.fieldsPerRecord,
+		maxBuf:          o.maxBuf,
 	}
 	if !validDelim(o.delimiter) {
 		rd.err = ErrInvalidDelim
@@ -91,6 +96,11 @@ func NewReader(r io.Reader, opts ...Option) *Reader {
 // It returns ErrBareQuote or ErrQuote for malformed quoting, unless
 // WithLazyQuotes is in effect, and propagates any error from the underlying
 // reader.
+//
+// If a field count is in effect (see WithFieldsPerRecord) and the record has
+// a different number of fields, Next returns the record along with
+// ErrFieldCount. Like encoding/csv, this error is non-fatal: the returned
+// Record is valid and reading may continue.
 //
 // The returned Record is reused by the Reader and overwritten by each call to
 // Next. Its fields are zero-copy views into the Reader's internal buffer and
@@ -115,6 +125,9 @@ func (r *Reader) Next() (*Record, error) {
 			}
 			r.rec.fields = r.decode()
 			r.start = recEnd + nlLen
+			if err := r.checkFieldCount(r.rec.Len()); err != nil {
+				return &r.rec, err
+			}
 			return &r.rec, nil
 		}
 		if r.eof {
@@ -127,12 +140,36 @@ func (r *Reader) Next() (*Record, error) {
 	}
 }
 
+// checkFieldCount enforces the expected fields per record. A positive count
+// requires every record to match it and returns ErrFieldCount otherwise; a
+// zero count is learned from the first record. Blank lines never reach this
+// check because Next skips them before decode.
+func (r *Reader) checkFieldCount(n int) error {
+	if r.fieldsPerRecord > 0 {
+		if n != r.fieldsPerRecord {
+			return ErrFieldCount
+		}
+	} else if r.fieldsPerRecord == 0 {
+		r.fieldsPerRecord = n
+	}
+	return nil
+}
+
 // Error returns the first error encountered while reading, or nil if none has
 // occurred. io.EOF is normal termination and is not treated as an error, so
 // Error returns nil after a record stream has been read to completion. A
 // Reader configured with an invalid delimiter is failed from the start.
 func (r *Reader) Error() error {
 	return r.err
+}
+
+// FieldsPerRecord returns the expected number of fields per record. It
+// reflects the value configured with WithFieldsPerRecord: with
+// auto-detection (the default) it is 0 until the first record is read, after
+// which it is the field count learned from that record; a negative value
+// means no check is in effect.
+func (r *Reader) FieldsPerRecord() int {
+	return r.fieldsPerRecord
 }
 
 // scan locates the end of the next record starting at r.start, recording the
@@ -332,18 +369,61 @@ func (r *Reader) appendField(fstart, fend int, stripQuote bool) {
 	r.fields = append(r.fields, s)
 }
 
+// defaultBufSize is the initial size of the reader's reusable buffer.
+const defaultBufSize = 4096
+
+// minTrimSize is the smallest buffer the reader bothers reclaiming. A buffer
+// at or below this size is kept as-is even after a large record is consumed:
+// reclaiming it would force the next similar-sized record to grow it again,
+// churning allocations for negligible memory savings.
+const minTrimSize = 256 << 10
+
 // fill moves unprocessed bytes to the front of the buffer and reads more data.
 func (r *Reader) fill() error {
 	if r.start > 0 {
-		n := copy(r.buf, r.buf[r.start:r.end])
-		r.end = n
+		tail := r.end - r.start
+		if tail <= len(r.buf)/4 && len(r.buf) > minTrimSize {
+			// A record much larger than the buffer was just consumed; release
+			// the oversized buffer so memory does not stay pinned at the peak
+			// record size. The tail fits comfortably in a fresh buffer, so
+			// copy it there instead of compacting in place.
+			size := defaultBufSize
+			for size <= tail {
+				size *= 2
+			}
+			if r.maxBuf > 0 && size > r.maxBuf {
+				size = r.maxBuf
+			}
+			nb := make([]byte, size)
+			copy(nb, r.buf[r.start:r.end])
+			r.buf = nb
+			r.end = tail
+		} else {
+			n := copy(r.buf, r.buf[r.start:r.end])
+			r.end = n
+		}
 		r.start = 0
 	}
 	if r.end == len(r.buf) {
 		if len(r.buf) == 0 {
-			r.buf = make([]byte, 4096)
+			size := defaultBufSize
+			if r.maxBuf > 0 && size > r.maxBuf {
+				size = r.maxBuf
+			}
+			r.buf = make([]byte, size)
 		} else {
-			r.buf = append(r.buf, make([]byte, len(r.buf))...)
+			if r.maxBuf > 0 && len(r.buf) >= r.maxBuf {
+				// The current record spans the whole buffer and the cap would
+				// not let it grow any further; it cannot be parsed in memory.
+				return ErrRecordTooLarge
+			}
+			size := len(r.buf) * 2
+			if r.maxBuf > 0 && size > r.maxBuf {
+				size = r.maxBuf
+			}
+			nb := make([]byte, size)
+			copy(nb, r.buf)
+			r.buf = nb
 		}
 	}
 	n, err := r.r.Read(r.buf[r.end:])
@@ -364,5 +444,16 @@ func (r *Reader) fill() error {
 // ErrBareQuote is returned when a bare '"' appears in a non-quoted field.
 var ErrBareQuote = errors.New("bare \" in non-quoted field")
 
+// ErrRecordTooLarge is returned by Next when a record is larger than the
+// maximum buffer size configured with WithMaxBuffer and therefore cannot be
+// parsed in memory. Reading cannot continue past the record.
+var ErrRecordTooLarge = errors.New("zerocsv: record larger than the maximum buffer size")
+
 // ErrQuote is returned for an extraneous or missing '"' in a quoted field.
 var ErrQuote = errors.New("extraneous or missing \" in quoted-field")
+
+// ErrFieldCount is returned by Next or Write when a record's field count does
+// not match the expected number of fields (see WithFieldsPerRecord). It is
+// non-fatal, like encoding/csv: the record is still returned or written and
+// reading or writing can continue.
+var ErrFieldCount = errors.New("wrong number of fields")
