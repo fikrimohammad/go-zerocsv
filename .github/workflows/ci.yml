@@ -66,8 +66,10 @@ jobs:
       matrix:
         target:
           - FuzzWriterConformance
+          - FuzzWriterFieldCount
           - FuzzReaderConformance
           - FuzzReaderConformanceLazy
+          - FuzzReaderConformanceFieldCount
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

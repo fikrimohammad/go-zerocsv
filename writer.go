@@ -32,11 +32,12 @@ const bufioDefaultSize = 4096
 // slice (e.g. Write(row...)) rather than passing freshly constructed variadic
 // args.
 type Writer struct {
-	w       *bufio.Writer
-	err     error
-	comma   byte
-	useCRLF bool
-	scratch []byte
+	w               *bufio.Writer
+	err             error
+	comma           byte
+	useCRLF         bool
+	fieldsPerRecord int // expected fields per record; see WithFieldsPerRecord
+	scratch         []byte
 }
 
 // NewWriter returns a Writer that writes CSV records to w, applying opts. If
@@ -48,9 +49,10 @@ func NewWriter(w io.Writer, opts ...Option) *Writer {
 		opt(o)
 	}
 	wr := &Writer{
-		comma:   o.delimiter,
-		useCRLF: o.useCRLF,
-		scratch: make([]byte, 0, initialScratchSize),
+		comma:           o.delimiter,
+		useCRLF:         o.useCRLF,
+		fieldsPerRecord: o.fieldsPerRecord,
+		scratch:         make([]byte, 0, initialScratchSize),
 	}
 	if bw, ok := w.(*bufio.Writer); ok && bw.Size() >= bufioDefaultSize {
 		wr.w = bw
@@ -66,6 +68,11 @@ func NewWriter(w io.Writer, opts ...Option) *Writer {
 // Write writes cols as a single CSV record to the underlying writer. It
 // returns ErrEmptyRecord if cols is empty, or the first error encountered
 // while writing the record.
+//
+// If a field count is in effect (see WithFieldsPerRecord) and cols has a
+// different number of fields, Write returns ErrFieldCount. Like encoding/csv,
+// the error is non-fatal: the record is still written and writing may
+// continue.
 func (w *Writer) Write(cols ...Column) error {
 	if w.err != nil {
 		return w.err
@@ -73,6 +80,7 @@ func (w *Writer) Write(cols ...Column) error {
 	if len(cols) == 0 {
 		return ErrEmptyRecord
 	}
+	countErr := w.checkFieldCount(len(cols))
 	for i := range cols {
 		if i > 0 {
 			w.writeByte(w.comma)
@@ -83,7 +91,25 @@ func (w *Writer) Write(cols ...Column) error {
 		w.writeByte('\r')
 	}
 	w.writeByte('\n')
-	return w.err
+	if w.err != nil {
+		return w.err
+	}
+	return countErr
+}
+
+// checkFieldCount enforces the expected fields per record. A positive count
+// requires every record to match it and returns ErrFieldCount otherwise; a
+// zero count is learned from the first record written. Empty records never
+// reach this check because Write rejects them beforehand.
+func (w *Writer) checkFieldCount(n int) error {
+	if w.fieldsPerRecord > 0 {
+		if n != w.fieldsPerRecord {
+			return ErrFieldCount
+		}
+	} else if w.fieldsPerRecord == 0 {
+		w.fieldsPerRecord = n
+	}
+	return nil
 }
 
 // WriteAll writes each row of rows as a CSV record to the underlying writer
@@ -111,6 +137,14 @@ func (w *Writer) Flush() error {
 // or nil if none has occurred.
 func (w *Writer) Error() error {
 	return w.err
+}
+
+// FieldsPerRecord returns the expected number of fields per record, as
+// configured with WithFieldsPerRecord. With auto-detection (the default) it
+// is 0 until the first record is written, after which it is the field count
+// learned from that record; a negative value means no check is in effect.
+func (w *Writer) FieldsPerRecord() int {
+	return w.fieldsPerRecord
 }
 
 func (w *Writer) writeColumn(c *Column) {

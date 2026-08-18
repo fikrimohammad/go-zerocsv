@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -411,7 +412,7 @@ func TestRoundTripAgainstEncodingCSV(t *testing.T) {
 		{" tab", "trailing "},
 	}
 	var ours, std bytes.Buffer
-	wo := NewWriter(&ours)
+	wo := NewWriter(&ours, WithFieldsPerRecord(-1))
 	ws := csv.NewWriter(&std)
 	for _, r := range records {
 		cols := make([]Column, len(r))
@@ -541,6 +542,237 @@ func FuzzWriterConformance(f *testing.F) {
 
 		if ours.String() != std.String() {
 			t.Fatalf("record %q:\n  zerocsv=%q\n  stdlib =%q", rec, ours.String(), std.String())
+		}
+	})
+}
+
+// --- fields per record -----------------------------------------------------
+
+func TestWriteFieldsPerRecordExact(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf, WithFieldsPerRecord(2))
+	if err := w.Write(ColumnString("a"), ColumnString("b")); err != nil {
+		t.Fatalf("Write(0): %v", err)
+	}
+	if err := w.Write(ColumnString("c"), ColumnString("d")); err != nil {
+		t.Fatalf("Write(1): %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if got, want := buf.String(), "a,b\nc,d\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestWriteFieldsPerRecordMismatch(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf, WithFieldsPerRecord(3))
+
+	// The mismatched record is still written, and writing continues.
+	if err := w.Write(ColumnString("a"), ColumnString("b")); !errors.Is(err, ErrFieldCount) {
+		t.Fatalf("Write(0) error = %v, want ErrFieldCount", err)
+	}
+	if err := w.Write(ColumnString("x"), ColumnString("y"), ColumnString("z")); err != nil {
+		t.Fatalf("Write(1): %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if got, want := buf.String(), "a,b\nx,y,z\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	// ErrFieldCount is non-fatal: Error() is not poisoned.
+	if err := w.Error(); err != nil {
+		t.Fatalf("Error() = %v after ErrFieldCount, want nil", err)
+	}
+}
+
+func TestWriteFieldsPerRecordAutoDetect(t *testing.T) {
+	// The default (0) and an explicit WithFieldsPerRecord(0) both learn the
+	// field count from the first written record and enforce it from then on.
+	for _, opts := range [][]Option{nil, {WithFieldsPerRecord(0)}} {
+		var buf bytes.Buffer
+		w := NewWriter(&buf, opts...)
+		if err := w.Write(ColumnString("a"), ColumnString("b"), ColumnString("c")); err != nil {
+			t.Fatalf("Write(0): %v", err)
+		}
+		if err := w.Write(ColumnString("1"), ColumnString("2")); !errors.Is(err, ErrFieldCount) {
+			t.Fatalf("Write(1) error = %v, want ErrFieldCount", err)
+		}
+		if err := w.Flush(); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		if got, want := buf.String(), "a,b,c\n1,2\n"; got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	}
+}
+
+func TestWriteFieldsPerRecordDisabled(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf, WithFieldsPerRecord(-1))
+	if err := w.Write(ColumnString("a"), ColumnString("b"), ColumnString("c")); err != nil {
+		t.Fatalf("Write(0): %v", err)
+	}
+	if err := w.Write(ColumnString("1")); err != nil {
+		t.Fatalf("Write(1): %v", err)
+	}
+	if err := w.Write(ColumnString("x"), ColumnString("y")); err != nil {
+		t.Fatalf("Write(2): %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if got, want := buf.String(), "a,b,c\n1\nx,y\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestWriteFieldsPerRecordEmptyRecord(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf, WithFieldsPerRecord(2))
+
+	// An empty record is still ErrEmptyRecord, and does not set the count.
+	if err := w.Write(); err != ErrEmptyRecord {
+		t.Fatalf("Write() error = %v, want ErrEmptyRecord", err)
+	}
+	if err := w.Write(ColumnString("a"), ColumnString("b")); err != nil {
+		t.Fatalf("Write(1): %v", err)
+	}
+	if err := w.Write(ColumnString("x")); !errors.Is(err, ErrFieldCount) {
+		t.Fatalf("Write(2) error = %v, want ErrFieldCount", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if got, want := buf.String(), "a,b\nx\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestWriteAllFieldsPerRecord(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf, WithFieldsPerRecord(2))
+	rows := [][]Column{
+		{ColumnString("a"), ColumnString("b")},
+		{ColumnString("c")},
+		{ColumnString("d"), ColumnString("e")},
+	}
+	// WriteAll stops at the first error: the third row is never written.
+	if err := w.WriteAll(rows); !errors.Is(err, ErrFieldCount) {
+		t.Fatalf("WriteAll error = %v, want ErrFieldCount", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if got, want := buf.String(), "a,b\nc\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestWriteFieldsPerRecordZeroAllocs(t *testing.T) {
+	cols := []Column{ColumnString("a"), ColumnString("b"), ColumnString("c")}
+	w := NewWriter(io.Discard, WithFieldsPerRecord(3))
+	if got := testing.AllocsPerRun(1000, func() {
+		if err := w.Write(cols...); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}); got != 0 {
+		t.Fatalf("Write allocated %v times per run, want 0", got)
+	}
+}
+
+func TestWriterFieldsPerRecordAccessor(t *testing.T) {
+	// Auto-detect: 0 before any record is written, then the learned count.
+	w := NewWriter(io.Discard)
+	if got := w.FieldsPerRecord(); got != 0 {
+		t.Fatalf("FieldsPerRecord() before write = %d, want 0", got)
+	}
+	if err := w.Write(ColumnString("a"), ColumnString("b")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got := w.FieldsPerRecord(); got != 2 {
+		t.Fatalf("FieldsPerRecord() after write = %d, want 2", got)
+	}
+
+	// Explicit positive count is reported as configured.
+	w = NewWriter(io.Discard, WithFieldsPerRecord(5))
+	if got := w.FieldsPerRecord(); got != 5 {
+		t.Fatalf("FieldsPerRecord() = %d, want 5", got)
+	}
+
+	// Disabled mode stays negative.
+	w = NewWriter(io.Discard, WithFieldsPerRecord(-1))
+	if got := w.FieldsPerRecord(); got != -1 {
+		t.Fatalf("FieldsPerRecord() = %d, want -1", got)
+	}
+}
+
+func TestWriteFieldsPerRecordCombinedOptions(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf, WithFieldsPerRecord(2), WithCRLF(), WithDelimiter(';'))
+
+	if err := w.Write(ColumnString("a"), ColumnString("b")); err != nil {
+		t.Fatalf("Write(0): %v", err)
+	}
+	if err := w.Write(ColumnString("c"), ColumnString("d;e"), ColumnString("f")); !errors.Is(err, ErrFieldCount) {
+		t.Fatalf("Write(1) error = %v, want ErrFieldCount", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	// CRLF endings, ';' delimiter, and the mismatched record still written.
+	if got, want := buf.String(), "a;b\r\nc;\"d;e\";f\r\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// FuzzWriterFieldCount verifies that with the default auto-detect field
+// count, every record is fully written (the output is the exact concatenation
+// of all records) and ErrFieldCount is returned precisely for records whose
+// width differs from the first record's.
+func FuzzWriterFieldCount(f *testing.F) {
+	f.Add(2, 2, 2, 2)
+	f.Add(1, 2, 3, 4)
+	f.Add(5, 1, 5, 5)
+	f.Add(3, 3, 2, 1)
+	f.Fuzz(func(t *testing.T, w0, w1, w2, w3 int) {
+		widths := []int{w0, w1, w2, w3}
+		for i := range widths {
+			// uint cast keeps the modulo non-negative for negative inputs.
+			widths[i] = 1 + int(uint(widths[i])%5) // width in [1,5]
+		}
+
+		var buf bytes.Buffer
+		w := NewWriter(&buf)
+		var want string
+		for i, n := range widths {
+			cols := make([]Column, n)
+			for j := range cols {
+				cols[j] = ColumnString(strconv.Itoa(j))
+			}
+			err := w.Write(cols...)
+			var wantErr error
+			if i > 0 && n != widths[0] {
+				wantErr = ErrFieldCount
+			}
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("record %d: error = %v, want %v (widths=%v)", i, err, wantErr, widths)
+			}
+			for j := 0; j < n; j++ {
+				if j > 0 {
+					want += ","
+				}
+				want += strconv.Itoa(j)
+			}
+			want += "\n"
+		}
+		if err := w.Flush(); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		if buf.String() != want {
+			t.Fatalf("output mismatch: got %q, want %q", buf.String(), want)
 		}
 	})
 }
