@@ -166,12 +166,12 @@ fmt.Println(w.FieldsPerRecord()) // 0 until the first record is written
 ### Typed columns (Writer)
 
 ```go
-var dateBuf [32]byte
 w.Write(
 	zerocsv.ColumnInt64(42),
 	zerocsv.ColumnFloat64(3.14),
-	zerocsv.ColumnBytes(time.Now().AppendFormat(dateBuf[:0], time.RFC3339)),
-	zerocsv.ColumnString("hello"),
+	zerocsv.ColumnBool(true),
+	zerocsv.ColumnString(time.Now().Format(time.RFC3339)),
+	zerocsv.ColumnBytes([]byte("raw-bytes")),
 )
 ```
 
