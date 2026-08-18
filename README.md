@@ -243,14 +243,14 @@ and `B/op` is the cumulative allocation for the whole pass.
 
 | Rows | zerocsv ns/op | zerocsv MB/s | zerocsv B/op | zerocsv allocs | stdlib ns/op | stdlib MB/s | stdlib B/op | stdlib allocs |
 | ---- | ------------: | -----------: | -----------: | --------------: | -----------: | ----------: | ----------: | -------------: |
-| 100K | 6.54ms | 439.3 | 4.9 KB | 12 | 10.78ms | 266.8 | 10.3 MB | 200,013 |
-| 500K | 33.1ms | 434.0 | 4.9 KB | 12 | 51.0ms | 282.1 | 51.5 MB | 1,000,013 |
-| 1M | 66.3ms | 433.8 | 4.9 KB | 12 | 101.6ms | 283.0 | 103 MB | 2,000,013 |
-| 5M | 330.5ms | 435.0 | 4.9 KB | 12 | 510.6ms | 281.6 | 515 MB | 10,000,013 |
+| 100K | 6.37ms | 451.6 | 5.0 KB | 12 | 10.50ms | 273.8 | 10.8 MB | 200,013 |
+| 500K | 30.8ms | 465.6 | 5.0 KB | 12 | 50.16ms | 286.5 | 54.0 MB | 1,000,013 |
+| 1M | 62.2ms | 461.9 | 5.0 KB | 12 | 100.6ms | 285.8 | 108 MB | 2,000,014 |
+| 5M | 302.8ms | 474.7 | 5.0 KB | 12 | 492.3ms | 292.0 | 540 MB | 10,000,014 |
 
-zerocsv allocates a constant ~4.9 KB and 12 objects no matter how many rows
+zerocsv allocates a constant ~5.0 KB and 12 objects no matter how many rows
 are read: it reuses one small buffer that is compacted between records, so its
-`B/op` stays flat while `encoding/csv`'s grows linearly to 515 MB at 5M rows.
+`B/op` stays flat while `encoding/csv`'s grows linearly to 540 MB at 5M rows.
 A record larger than the buffer grows it on demand to fit that single record,
 and the buffer is trimmed back to ~4 KB once the record has been consumed, so
 memory never stays pinned at the peak record size. Buffers up to 256 KB are
@@ -266,33 +266,33 @@ cumulative allocation for the whole pass.
 
 | Rows | zerocsv ns/op | zerocsv B/op | zerocsv allocs | stdlib ns/op | stdlib B/op | stdlib allocs |
 | ---- | ------------: | -----------: | --------------: | -----------: | ----------: | -------------: |
-| 100K | 14.1ms | 4.2 KB | 5 | 18.7ms | 4.5 MB | 399,890 |
-| 500K | 71.8ms | 4.2 KB | 5 | 95.2ms | 22.8 MB | 1,999,890 |
-| 1M | 143.5ms | 4.2 KB | 5 | 191.1ms | 45.7 MB | 3,999,890 |
-| 5M | 755.1ms | 4.2 KB | 5 | 1,019ms | 259 MB | 19,999,894 |
+| 100K | 13.6ms | 4.3 KB | 6 | 20.1ms | 4.7 MB | 399,890 |
+| 500K | 67.3ms | 4.3 KB | 6 | 101.0ms | 24.0 MB | 1,999,892 |
+| 1M | 137.8ms | 4.3 KB | 6 | 204.4ms | 47.9 MB | 3,999,895 |
+| 5M | 708.3ms | 4.3 KB | 6 | 1,119ms | 272 MB | 19,999,917 |
 
-zerocsv writes ~1.4x faster than `encoding/csv` and allocates a constant
-4.2 KB (one 4 KB buffer plus a small numeric scratch) regardless of row count,
+zerocsv writes ~1.5x faster than `encoding/csv` and allocates a constant
+4.3 KB (one 4 KB buffer plus a small numeric scratch) regardless of row count,
 whereas `encoding/csv` allocates ~4 objects per record for its `strconv`
-conversions — 259 MB of cumulative allocation for 5M rows.
+conversions — 272 MB of cumulative allocation for 5M rows.
 
 ### Reading — per record
 
 | Benchmark | ns/op | B/op | allocs/op |
 | --------- | ----: | ---: | --------: |
-| zerocsv `Read` | 53.7 | 19 | 0 |
-| `encoding/csv` `Read` | 114.7 | 114 | 2 |
+| zerocsv `Read` | 50.4 | 19 | 0 |
+| `encoding/csv` `Read` | 115.3 | 114 | 2 |
 
 ### Writing — per record
 
 | Benchmark | ns/op | B/op | allocs/op |
 | --------- | ----: | ---: | --------: |
-| zerocsv `Write` (strings) | 64.7 | 0 | 0 |
-| `encoding/csv` `Write` (strings) | 58.6 | 0 | 0 |
-| zerocsv `Write` (mixed types) | 100.7 | 0 | 0 |
-| `encoding/csv` `Write` (mixed types) | 144.3 | 31 | 2 |
-| zerocsv `Write` (with time) | 148.8 | 0 | 0 |
-| `encoding/csv` `Write` (with time) | 200.1 | 54 | 3 |
+| zerocsv `Write` (strings) | 63.8 | 0 | 0 |
+| `encoding/csv` `Write` (strings) | 58.2 | 0 | 0 |
+| zerocsv `Write` (mixed types) | 95.7 | 0 | 0 |
+| `encoding/csv` `Write` (mixed types) | 142.5 | 31 | 2 |
+| zerocsv `Write` (with time) | 142.4 | 0 | 0 |
+| `encoding/csv` `Write` (with time) | 200.5 | 54 | 3 |
 
 For pre-formatted strings both writers are allocation-free and comparable.
 When values need formatting, zerocsv formats into its own scratch buffer
