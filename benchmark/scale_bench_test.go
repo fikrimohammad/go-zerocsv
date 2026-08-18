@@ -12,14 +12,14 @@ import (
 	zerocsv "github.com/fikrimohammad/go-zerocsv"
 )
 
-// BenchmarkScale compares zerocsv against encoding/csv at fixed row counts,
+// BenchmarkWriteScale compares zerocsv against encoding/csv at fixed row counts,
 // one write of n rows per iteration. Run with:
 //
-//	go test -bench BenchmarkScale -benchmem ./benchmark
+//	go test -bench BenchmarkWriteScale -benchmem ./benchmark
 //
 // ns/op gives per-write cost (n rows), allocs/op and B/op give the allocation
 // profile for writing n rows. Throughput is n / (ns/op).
-func BenchmarkScale(b *testing.B) {
+func BenchmarkWriteScale(b *testing.B) {
 	sizes := []int{100_000, 500_000, 1_000_000, 5_000_000}
 	for _, n := range sizes {
 		b.Run(fmt.Sprintf("zerocsv/%d", n), func(b *testing.B) {
