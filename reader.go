@@ -192,7 +192,7 @@ func (r *Reader) FieldsPerRecord() int {
 // of the line terminator, the terminator length (1 or 2 for CRLF), and
 // whether a complete record was found. A (false, nil) result means the record
 // spans the current buffer and more data is needed; when eof is set it means
-// no data remains and Next returns io.EOF.
+// no data remains and Read returns io.EOF.
 func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 	r.fieldSpans = r.fieldSpans[:0]
 	pos := r.start
@@ -309,7 +309,7 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 
 	if r.eof {
 		if pos == r.start {
-			// No data at all in this buffer; Next reports io.EOF.
+			// No data at all in this buffer; Read reports io.EOF.
 			return 0, 0, false, nil
 		}
 		if inQuotes {
@@ -332,7 +332,7 @@ func (r *Reader) recordSpan(fieldStart, pos int, closed bool) {
 // recordField records the final field of the record ending at recEnd with a
 // terminator of length nlLen (0 for a final record without a trailing
 // newline) and returns a complete record. A blank line records no fields and
-// is skipped by Next.
+// is skipped by Read.
 func (r *Reader) recordField(recEnd, nlLen int, fieldStart, pos int, closed bool) (int, int, bool, error) {
 	if pos != fieldStart || len(r.fieldSpans) != 0 {
 		r.recordSpan(fieldStart, pos, closed)
