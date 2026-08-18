@@ -13,9 +13,19 @@ against `encoding/csv`.
 
 ## Features
 
-- **Zero allocations on the hot path**: each `Write` and each `Next` parses
+- **Zero allocations on the hot path**: each `Write` and lazy `Read` parses
   without heap allocation; the buffer and field slices are allocated once and
   reused.
+- **Symmetric Scanner & Valuer interfaces**: custom types can implement
+  `FieldScanner` (`ScanCSV([]byte) error`) and `FieldValuer` (`AppendCSV([]byte) ([]byte, error)`)
+  for zero-allocation custom parsing and formatting with no reflection or interface boxing.
+- **`database/sql`-style typed scanning**: `Record.Scan(&id, &name, &score)`
+  parses numeric, boolean, string, and custom fields in-place with zero allocations and
+  protects against scratch buffer mutation.
+- **Ultra-compact 48-byte `Column` value struct**: passes by value with minimal
+  stack and slice memory overhead.
+- **Eager & Lazy reading APIs**: use lazy `Read()` for streaming with flat memory
+  or `ReadAll()` to eagerly load all records into safe, owned storage.
 - **Field-count validation**: like `encoding/csv`, records are checked to have
   a consistent number of fields (auto-detected from the first record) on both
   read and write, unless disabled with `WithFieldsPerRecord(-1)`.
@@ -65,7 +75,7 @@ func main() {
 }
 ```
 
-### Reading
+### Reading (Typed & Zero-Allocation)
 
 ```go
 package main
@@ -80,26 +90,50 @@ import (
 )
 
 func main() {
-	input := "name,age\nAlice,30\nBob,40\n"
+	input := "id,name,score,active\n1,Alice,3.14,true\n2,Bob,2.50,false\n"
 	r := zerocsv.NewReader(strings.NewReader(input))
 
 	for {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			log.Fatal(err)
 		}
-		for i := 0; i < rec.Len(); i++ {
-			fmt.Printf("%d:%s ", i, rec.ValueAt(i))
+		if rec.IsFirst() {
+			continue // skip header
 		}
-		fmt.Println()
+
+		var (
+			id     int
+			name   string
+			score  float64
+			active bool
+		)
+		if err := rec.Scan(&id, &name, &score, &active); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("id=%d name=%s score=%.2f active=%t\n", id, name, score, active)
 	}
 }
 ```
 
 ## Advanced Usage
+
+### Eager Reading with `ReadAll()`
+
+To eagerly load all remaining CSV records into safe, owned `Record`s:
+
+```go
+records, err := r.ReadAll()
+if err != nil {
+	log.Fatal(err)
+}
+for _, rec := range records {
+	fmt.Println(rec.Strings())
+}
+```
 
 ### Custom options
 
@@ -129,14 +163,15 @@ w := zerocsv.NewWriter(buf)
 fmt.Println(w.FieldsPerRecord()) // 0 until the first record is written
 ```
 
-### Typed columns
+### Typed columns (Writer)
 
 ```go
 w.Write(
 	zerocsv.ColumnInt64(42),
 	zerocsv.ColumnFloat64(3.14),
-	zerocsv.ColumnTime(time.Now(), time.RFC3339),
-	zerocsv.ColumnBytes([]byte("raw")),
+	zerocsv.ColumnBool(true),
+	zerocsv.ColumnString(time.Now().Format(time.RFC3339)),
+	zerocsv.ColumnBytes([]byte("raw-bytes")),
 )
 ```
 
@@ -154,24 +189,37 @@ for _, v := range values {
 }
 ```
 
-### Zero-copy reading
+### Custom Types (Scanner & Valuer)
 
-`ValueAt` returns a zero-copy view into the reader's reused buffer. The value
-is valid only until the next `Next` call. Convert it to a string to own the
-data, since `string([]byte)` copies:
+Custom domain types can control their CSV parsing and formatting with **zero allocations** by implementing `FieldScanner` and `FieldValuer`:
 
 ```go
-for {
-	rec, err := r.Next()
-	if err == io.EOF {
-		break
-	}
+type Date time.Time
+
+// Reader: zero-allocation parsing from raw field bytes
+func (d *Date) ScanCSV(field []byte) error {
+	t, err := time.Parse("2006-01-02", string(field))
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	name := string(rec.ValueAt(0)) // owned copy, safe to retain
-	_ = name
+	*d = Date(t)
+	return nil
 }
+
+// Writer: zero-allocation formatting into writer scratch buffer
+func (d Date) AppendCSV(dst []byte) ([]byte, error) {
+	return time.Time(d).AppendFormat(dst, "2006-01-02"), nil
+}
+```
+
+Usage:
+```go
+// Scanning into custom type
+var d Date
+err := rec.Scan(&id, &name, &d)
+
+// Writing custom type
+err := w.Write(zerocsv.ColumnString("alice"), zerocsv.ColumnValuer(d))
 ```
 
 ## Benchmarks
@@ -195,14 +243,14 @@ and `B/op` is the cumulative allocation for the whole pass.
 
 | Rows | zerocsv ns/op | zerocsv MB/s | zerocsv B/op | zerocsv allocs | stdlib ns/op | stdlib MB/s | stdlib B/op | stdlib allocs |
 | ---- | ------------: | -----------: | -----------: | --------------: | -----------: | ----------: | ----------: | -------------: |
-| 100K | 6.54ms | 439.3 | 4.9 KB | 12 | 10.78ms | 266.8 | 10.3 MB | 200,013 |
-| 500K | 33.1ms | 434.0 | 4.9 KB | 12 | 51.0ms | 282.1 | 51.5 MB | 1,000,013 |
-| 1M | 66.3ms | 433.8 | 4.9 KB | 12 | 101.6ms | 283.0 | 103 MB | 2,000,013 |
-| 5M | 330.5ms | 435.0 | 4.9 KB | 12 | 510.6ms | 281.6 | 515 MB | 10,000,013 |
+| 100K | 6.37ms | 451.6 | 5.0 KB | 12 | 10.50ms | 273.8 | 10.8 MB | 200,013 |
+| 500K | 30.8ms | 465.6 | 5.0 KB | 12 | 50.16ms | 286.5 | 54.0 MB | 1,000,013 |
+| 1M | 62.2ms | 461.9 | 5.0 KB | 12 | 100.6ms | 285.8 | 108 MB | 2,000,014 |
+| 5M | 302.8ms | 474.7 | 5.0 KB | 12 | 492.3ms | 292.0 | 540 MB | 10,000,014 |
 
-zerocsv allocates a constant ~4.9 KB and 12 objects no matter how many rows
+zerocsv allocates a constant ~5.0 KB and 12 objects no matter how many rows
 are read: it reuses one small buffer that is compacted between records, so its
-`B/op` stays flat while `encoding/csv`'s grows linearly to 515 MB at 5M rows.
+`B/op` stays flat while `encoding/csv`'s grows linearly to 540 MB at 5M rows.
 A record larger than the buffer grows it on demand to fit that single record,
 and the buffer is trimmed back to ~4 KB once the record has been consumed, so
 memory never stays pinned at the peak record size. Buffers up to 256 KB are
@@ -218,33 +266,33 @@ cumulative allocation for the whole pass.
 
 | Rows | zerocsv ns/op | zerocsv B/op | zerocsv allocs | stdlib ns/op | stdlib B/op | stdlib allocs |
 | ---- | ------------: | -----------: | --------------: | -----------: | ----------: | -------------: |
-| 100K | 14.1ms | 4.2 KB | 5 | 18.7ms | 4.5 MB | 399,890 |
-| 500K | 71.8ms | 4.2 KB | 5 | 95.2ms | 22.8 MB | 1,999,890 |
-| 1M | 143.5ms | 4.2 KB | 5 | 191.1ms | 45.7 MB | 3,999,890 |
-| 5M | 755.1ms | 4.2 KB | 5 | 1,019ms | 259 MB | 19,999,894 |
+| 100K | 13.6ms | 4.3 KB | 6 | 20.1ms | 4.7 MB | 399,890 |
+| 500K | 67.3ms | 4.3 KB | 6 | 101.0ms | 24.0 MB | 1,999,892 |
+| 1M | 137.8ms | 4.3 KB | 6 | 204.4ms | 47.9 MB | 3,999,895 |
+| 5M | 708.3ms | 4.3 KB | 6 | 1,119ms | 272 MB | 19,999,917 |
 
-zerocsv writes ~1.4x faster than `encoding/csv` and allocates a constant
-4.2 KB (one 4 KB buffer plus a small numeric scratch) regardless of row count,
+zerocsv writes ~1.5x faster than `encoding/csv` and allocates a constant
+4.3 KB (one 4 KB buffer plus a small numeric scratch) regardless of row count,
 whereas `encoding/csv` allocates ~4 objects per record for its `strconv`
-conversions — 259 MB of cumulative allocation for 5M rows.
+conversions — 272 MB of cumulative allocation for 5M rows.
 
 ### Reading — per record
 
 | Benchmark | ns/op | B/op | allocs/op |
 | --------- | ----: | ---: | --------: |
-| zerocsv `Next` | 54.6 | 19 | 0 |
-| `encoding/csv` `Read` | 116.4 | 114 | 2 |
+| zerocsv `Read` | 50.4 | 19 | 0 |
+| `encoding/csv` `Read` | 115.3 | 114 | 2 |
 
 ### Writing — per record
 
 | Benchmark | ns/op | B/op | allocs/op |
 | --------- | ----: | ---: | --------: |
-| zerocsv `Write` (strings) | 64.7 | 0 | 0 |
-| `encoding/csv` `Write` (strings) | 58.6 | 0 | 0 |
-| zerocsv `Write` (mixed types) | 100.7 | 0 | 0 |
-| `encoding/csv` `Write` (mixed types) | 144.3 | 31 | 2 |
-| zerocsv `Write` (with time) | 148.8 | 0 | 0 |
-| `encoding/csv` `Write` (with time) | 200.1 | 54 | 3 |
+| zerocsv `Write` (strings) | 63.8 | 0 | 0 |
+| `encoding/csv` `Write` (strings) | 58.2 | 0 | 0 |
+| zerocsv `Write` (mixed types) | 95.7 | 0 | 0 |
+| `encoding/csv` `Write` (mixed types) | 142.5 | 31 | 2 |
+| zerocsv `Write` (with time) | 142.4 | 0 | 0 |
+| `encoding/csv` `Write` (with time) | 200.5 | 54 | 3 |
 
 For pre-formatted strings both writers are allocation-free and comparable.
 When values need formatting, zerocsv formats into its own scratch buffer
@@ -268,7 +316,7 @@ go-zerocsv intentionally does not implement every `encoding/csv` feature:
 - The delimiter is a single byte; multi-rune delimiters are not supported.
 - Comment lines are not recognized, and leading whitespace is never trimmed.
 - The parser cannot resume after a malformed record: once a parse error
-  occurs, `Next` keeps returning it. (Field-count mismatches are the exception
+  occurs, `Read` and `ReadAll` keep returning it. (Field-count mismatches are the exception
   and are non-fatal, matching `encoding/csv`.)
 
 ## Contributing

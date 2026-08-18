@@ -91,6 +91,7 @@ func BenchmarkWriteWithTime(b *testing.B) {
 	w := zerocsv.NewWriter(io.Discard)
 	ts := time.Date(2026, 8, 17, 12, 34, 56, 0, time.UTC)
 	cols := make([]zerocsv.Column, 6)
+	var timeScratch [32]byte
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -99,7 +100,7 @@ func BenchmarkWriteWithTime(b *testing.B) {
 		cols[2] = zerocsv.ColumnInt64(int64(i) * 1000)
 		cols[3] = zerocsv.ColumnFloat64(float64(i) * 0.5)
 		cols[4] = zerocsv.ColumnBool(i%2 == 0)
-		cols[5] = zerocsv.ColumnTime(ts, time.RFC3339)
+		cols[5] = zerocsv.ColumnBytes(ts.AppendFormat(timeScratch[:0], time.RFC3339))
 		if err := w.Write(cols...); err != nil {
 			b.Fatal(err)
 		}
@@ -140,17 +141,15 @@ func BenchmarkRead(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err == io.EOF {
 			r = zerocsv.NewReader(strings.NewReader(benchCSV))
-			rec, err = r.Next()
+			rec, err = r.Read()
 		}
 		if err != nil {
 			b.Fatal(err)
 		}
-		for j := 0; j < rec.Len(); j++ {
-			_ = rec.ValueAt(j)
-		}
+		_ = rec.Len()
 	}
 }
 

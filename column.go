@@ -2,42 +2,68 @@ package zerocsv
 
 import (
 	"math"
-	"time"
+	"unsafe"
 )
 
 // ColumnKind identifies the payload type stored in a Column.
 type ColumnKind uint8
 
 const (
-	columnString ColumnKind = iota
-	columnBytes
-	columnInt
-	columnUint
-	columnFloat
-	columnFloat32
-	columnBool
-	columnTime
-	columnAny
+	ColumnKindString ColumnKind = iota
+	ColumnKindBytes
+	ColumnKindInt
+	ColumnKindUint
+	ColumnKindFloat
+	ColumnKindFloat32
+	ColumnKindBool
+	ColumnKindValuer
+)
+
+const (
+	columnString  = ColumnKindString
+	columnBytes   = ColumnKindBytes
+	columnInt     = ColumnKindInt
+	columnUint    = ColumnKindUint
+	columnFloat   = ColumnKindFloat
+	columnFloat32 = ColumnKindFloat32
+	columnBool    = ColumnKindBool
+	columnValuer  = ColumnKindValuer
 )
 
 // Column is a tagged, value-typed CSV field. Pass it to Write by value;
-// building and writing columns performs no heap allocation for the typed
-// constructors. ColumnAny is the exception and may allocate.
+// building and writing columns performs no heap allocation for all constructors.
 type Column struct {
-	kind ColumnKind
-	s    string
-	bs   []byte
-	n    uint64
-	v    any
-	t    time.Time
+	valuer FieldValuer
+	s      string
+	n      uint64
+	kind   ColumnKind
+}
+
+// Kind returns the ColumnKind of c.
+func (c Column) Kind() ColumnKind {
+	return c.kind
 }
 
 // ColumnString returns a Column containing s.
 func ColumnString(s string) Column { return Column{kind: columnString, s: s} }
 
 // ColumnBytes returns a Column containing b. The slice is written as-is, with
-// no copy.
-func ColumnBytes(b []byte) Column { return Column{kind: columnBytes, bs: b} }
+// no copy and no heap allocation.
+func ColumnBytes(b []byte) Column {
+	return Column{
+		kind: columnBytes,
+		s:    bytesToString(b),
+	}
+}
+
+// bytesToString returns a string pointing to the same backing array as b
+// without heap allocation.
+func bytesToString(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return *(*string)(unsafe.Pointer(&b))
+}
 
 // ColumnInt returns a Column containing v.
 func ColumnInt(v int) Column { return Column{kind: columnInt, n: uint64(int64(v))} }
@@ -89,12 +115,6 @@ func ColumnBool(v bool) Column {
 	return Column{kind: columnBool, n: n}
 }
 
-// ColumnTime returns a Column containing t, formatted with layout when the
-// record is written.
-func ColumnTime(t time.Time, layout string) Column {
-	return Column{kind: columnTime, t: t, s: layout}
-}
-
-// ColumnAny returns a Column containing v, rendered with fmt.Sprint when the
-// record is written. Unlike the typed constructors, this may allocate.
-func ColumnAny(v any) Column { return Column{kind: columnAny, v: v} }
+// ColumnValuer returns a Column containing v, which appends its CSV
+// representation with zero heap allocations.
+func ColumnValuer(v FieldValuer) Column { return Column{kind: columnValuer, valuer: v} }

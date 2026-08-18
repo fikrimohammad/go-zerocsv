@@ -16,14 +16,17 @@ func readAllZerocsv(t *testing.T, input string, opts ...Option) ([][]string, err
 	r := NewReader(strings.NewReader(input), opts...)
 	var rows [][]string
 	for {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err == io.EOF {
 			return rows, nil
 		}
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrFieldCount) {
 			return rows, err
 		}
-		rows = append(rows, rec.Copy()) // Copy: owned strings
+		rows = append(rows, rec.Strings())
+		if errors.Is(err, ErrFieldCount) {
+			return rows, err
+		}
 	}
 }
 
@@ -221,16 +224,16 @@ func TestReadChunked(t *testing.T) {
 
 	var got [][]string
 	for {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			t.Fatalf("Next: %v", err)
+			t.Fatalf("Read: %v", err)
 		}
 		row := make([]string, rec.Len())
 		for i := 0; i < rec.Len(); i++ {
-			row[i] = string(rec.ValueAt(i))
+			row[i] = rec.String(i)
 		}
 		got = append(got, row)
 	}
@@ -247,48 +250,48 @@ func TestReadChunked(t *testing.T) {
 
 func TestRecord(t *testing.T) {
 	r := NewReader(strings.NewReader("a,b,c\n1,2\n"))
-	rec, err := r.Next()
+	rec, err := r.Read()
 	if err != nil {
-		t.Fatalf("Next: %v", err)
+		t.Fatalf("Read: %v", err)
 	}
 	if rec.Len() != 3 {
 		t.Fatalf("Len() = %d, want 3", rec.Len())
 	}
-	if got := string(rec.ValueAt(0)); got != "a" {
-		t.Fatalf("ValueAt(0) = %q, want %q", got, "a")
+	if got := rec.String(0); got != "a" {
+		t.Fatalf("String(0) = %q, want %q", got, "a")
 	}
-	if got := string(rec.ValueAt(2)); got != "c" {
-		t.Fatalf("ValueAt(2) = %q, want %q", got, "c")
+	if got := rec.String(2); got != "c" {
+		t.Fatalf("String(2) = %q, want %q", got, "c")
 	}
 }
 
-func TestRecordCopyOwnsData(t *testing.T) {
+func TestRecordStringsOwnsData(t *testing.T) {
 	r := NewReader(strings.NewReader("a,b,c\n1,2,3\n"))
-	rec, err := r.Next()
+	rec, err := r.Read()
 	if err != nil {
-		t.Fatalf("Next: %v", err)
+		t.Fatalf("Read: %v", err)
 	}
-	got := rec.Copy()
+	got := rec.Strings()
 	if want := []string{"a", "b", "c"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("Copy() = %q, want %q", got, want)
+		t.Fatalf("Strings() = %q, want %q", got, want)
 	}
 	// Advancing the reader must not disturb the copied strings.
-	if _, err := r.Next(); err != nil {
-		t.Fatalf("Next: %v", err)
+	if _, err := r.Read(); err != nil {
+		t.Fatalf("Read: %v", err)
 	}
 	if want := []string{"a", "b", "c"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("Copy() after advancing reader = %q, want %q", got, want)
+		t.Fatalf("Strings() after advancing reader = %q, want %q", got, want)
 	}
 }
 
 func TestReaderInvalidDelimiter(t *testing.T) {
-	for _, d := range []byte{0, '"', '\r', '\n'} {
+	for _, d := range []byte{0, '"', '\r', '\n', 0x80, 0xff, 'é'} {
 		r := NewReader(strings.NewReader("a,b\n"), WithDelimiter(d))
 		if err := r.Error(); err == nil {
 			t.Fatalf("Error() = nil for delimiter %d, want ErrInvalidDelim", d)
 		}
-		if _, err := r.Next(); err == nil {
-			t.Fatalf("Next() = nil error for delimiter %d, want ErrInvalidDelim", d)
+		if _, err := r.Read(); err == nil {
+			t.Fatalf("Read() = nil error for delimiter %d, want ErrInvalidDelim", d)
 		}
 	}
 }
@@ -311,14 +314,14 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	r := NewReader(&buf)
 	var got [][]string
 	for {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			t.Fatalf("Next: %v", err)
+			t.Fatalf("Read: %v", err)
 		}
-		got = append(got, rec.Copy())
+		got = append(got, rec.Strings())
 	}
 	want := [][]string{
 		{"a,b", `quote"inside`, "line\nbreak"},
@@ -338,17 +341,28 @@ func TestReaderZeroAllocs(t *testing.T) {
 	r := NewReader(strings.NewReader(sb.String()))
 
 	// Warm up (fills the buffer).
-	if _, err := r.Next(); err != nil {
-		t.Fatalf("warmup Next: %v", err)
+	if _, err := r.Read(); err != nil {
+		t.Fatalf("warmup Read: %v", err)
 	}
+	var (
+		s1, s2 string
+		i      int
+		f      float64
+		b      bool
+	)
+	_ = s1
+	_ = s2
+	_ = i
+	_ = f
+	_ = b
 	if got := testing.AllocsPerRun(50, func() {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err != nil {
-			t.Fatalf("Next: %v", err)
+			t.Fatalf("Read: %v", err)
 		}
 		_ = rec.Len()
 	}); got != 0 {
-		t.Fatalf("Next allocated %v times per run, want 0", got)
+		t.Fatalf("Read allocated %v times per run, want 0", got)
 	}
 }
 
@@ -362,20 +376,20 @@ func (noProgressReader) Read(p []byte) (int, error) {
 
 func TestReadNoProgress(t *testing.T) {
 	r := NewReader(noProgressReader{})
-	if _, err := r.Next(); err != io.ErrNoProgress {
-		t.Fatalf("Next() error = %v, want io.ErrNoProgress", err)
+	if _, err := r.Read(); err != io.ErrNoProgress {
+		t.Fatalf("Read() error = %v, want io.ErrNoProgress", err)
 	}
 }
 
 func TestReaderErrorNilAfterCleanEOF(t *testing.T) {
 	r := NewReader(strings.NewReader("a,b\n"))
 	for {
-		_, err := r.Next()
+		_, err := r.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			t.Fatalf("Next: %v", err)
+			t.Fatalf("Read: %v", err)
 		}
 	}
 	if err := r.Error(); err != nil {
@@ -399,34 +413,34 @@ func TestReadFieldsPerRecordExact(t *testing.T) {
 func TestReadFieldsPerRecordMismatch(t *testing.T) {
 	r := NewReader(strings.NewReader("a,b,c\n1,2\nx,y,z\n"), WithFieldsPerRecord(3))
 
-	rec, err := r.Next()
+	rec, err := r.Read()
 	if err != nil {
-		t.Fatalf("Next(0): %v", err)
+		t.Fatalf("Read(0): %v", err)
 	}
-	if got := rec.Copy(); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
-		t.Fatalf("Next(0) = %q, want %q", got, []string{"a", "b", "c"})
+	if got := rec.Strings(); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Fatalf("Read(0) = %q, want %q", got, []string{"a", "b", "c"})
 	}
 
 	// The mismatched record is returned alongside ErrFieldCount, and reading
 	// continues with the next record, like encoding/csv.
-	rec, err = r.Next()
+	rec, err = r.Read()
 	if !errors.Is(err, ErrFieldCount) {
-		t.Fatalf("Next(1) error = %v, want ErrFieldCount", err)
+		t.Fatalf("Read(1) error = %v, want ErrFieldCount", err)
 	}
-	if got := rec.Copy(); !reflect.DeepEqual(got, []string{"1", "2"}) {
-		t.Fatalf("Next(1) = %q, want %q", got, []string{"1", "2"})
+	if got := rec.Strings(); !reflect.DeepEqual(got, []string{"1", "2"}) {
+		t.Fatalf("Read(1) = %q, want %q", got, []string{"1", "2"})
 	}
 
-	rec, err = r.Next()
+	rec, err = r.Read()
 	if err != nil {
-		t.Fatalf("Next(2): %v", err)
+		t.Fatalf("Read(2): %v", err)
 	}
-	if got := rec.Copy(); !reflect.DeepEqual(got, []string{"x", "y", "z"}) {
-		t.Fatalf("Next(2) = %q, want %q", got, []string{"x", "y", "z"})
+	if got := rec.Strings(); !reflect.DeepEqual(got, []string{"x", "y", "z"}) {
+		t.Fatalf("Read(2) = %q, want %q", got, []string{"x", "y", "z"})
 	}
 
-	if _, err := r.Next(); err != io.EOF {
-		t.Fatalf("Next(3) = %v, want io.EOF", err)
+	if _, err := r.Read(); err != io.EOF {
+		t.Fatalf("Read(3) = %v, want io.EOF", err)
 	}
 }
 
@@ -436,20 +450,20 @@ func TestReadFieldsPerRecordAutoDetect(t *testing.T) {
 	for _, opts := range [][]Option{nil, {WithFieldsPerRecord(0)}} {
 		r := NewReader(strings.NewReader("a,b\n1,2,3\n"), opts...)
 
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err != nil {
-			t.Fatalf("Next(0): %v", err)
+			t.Fatalf("Read(0): %v", err)
 		}
-		if got := rec.Copy(); !reflect.DeepEqual(got, []string{"a", "b"}) {
-			t.Fatalf("Next(0) = %q, want %q", got, []string{"a", "b"})
+		if got := rec.Strings(); !reflect.DeepEqual(got, []string{"a", "b"}) {
+			t.Fatalf("Read(0) = %q, want %q", got, []string{"a", "b"})
 		}
 
-		rec, err = r.Next()
+		rec, err = r.Read()
 		if !errors.Is(err, ErrFieldCount) {
-			t.Fatalf("Next(1) error = %v, want ErrFieldCount", err)
+			t.Fatalf("Read(1) error = %v, want ErrFieldCount", err)
 		}
-		if got := rec.Copy(); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
-			t.Fatalf("Next(1) = %q, want %q", got, []string{"1", "2", "3"})
+		if got := rec.Strings(); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
+			t.Fatalf("Read(1) = %q, want %q", got, []string{"1", "2", "3"})
 		}
 	}
 }
@@ -468,20 +482,20 @@ func TestReadFieldsPerRecordDisabled(t *testing.T) {
 func TestReadFieldsPerRecordFirstRecordWrong(t *testing.T) {
 	r := NewReader(strings.NewReader("a,b,c\n1,2\n"), WithFieldsPerRecord(2))
 
-	rec, err := r.Next()
+	rec, err := r.Read()
 	if !errors.Is(err, ErrFieldCount) {
-		t.Fatalf("Next(0) error = %v, want ErrFieldCount", err)
+		t.Fatalf("Read(0) error = %v, want ErrFieldCount", err)
 	}
-	if got := rec.Copy(); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
-		t.Fatalf("Next(0) = %q, want %q", got, []string{"a", "b", "c"})
+	if got := rec.Strings(); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Fatalf("Read(0) = %q, want %q", got, []string{"a", "b", "c"})
 	}
 
-	rec, err = r.Next()
+	rec, err = r.Read()
 	if err != nil {
-		t.Fatalf("Next(1): %v", err)
+		t.Fatalf("Read(1): %v", err)
 	}
-	if got := rec.Copy(); !reflect.DeepEqual(got, []string{"1", "2"}) {
-		t.Fatalf("Next(1) = %q, want %q", got, []string{"1", "2"})
+	if got := rec.Strings(); !reflect.DeepEqual(got, []string{"1", "2"}) {
+		t.Fatalf("Read(1) = %q, want %q", got, []string{"1", "2"})
 	}
 }
 
@@ -489,24 +503,24 @@ func TestReadFieldsPerRecordBlankLines(t *testing.T) {
 	// Blank lines are skipped and never set or violate the count.
 	r := NewReader(strings.NewReader("\n\n\nx,y\n\n1,2\n\n"))
 
-	rec, err := r.Next()
+	rec, err := r.Read()
 	if err != nil {
-		t.Fatalf("Next(0): %v", err)
+		t.Fatalf("Read(0): %v", err)
 	}
-	if got := rec.Copy(); !reflect.DeepEqual(got, []string{"x", "y"}) {
-		t.Fatalf("Next(0) = %q, want %q", got, []string{"x", "y"})
+	if got := rec.Strings(); !reflect.DeepEqual(got, []string{"x", "y"}) {
+		t.Fatalf("Read(0) = %q, want %q", got, []string{"x", "y"})
 	}
 
-	rec, err = r.Next()
+	rec, err = r.Read()
 	if err != nil {
-		t.Fatalf("Next(1): %v", err)
+		t.Fatalf("Read(1): %v", err)
 	}
-	if got := rec.Copy(); !reflect.DeepEqual(got, []string{"1", "2"}) {
-		t.Fatalf("Next(1) = %q, want %q", got, []string{"1", "2"})
+	if got := rec.Strings(); !reflect.DeepEqual(got, []string{"1", "2"}) {
+		t.Fatalf("Read(1) = %q, want %q", got, []string{"1", "2"})
 	}
 
-	if _, err := r.Next(); err != io.EOF {
-		t.Fatalf("Next(2) = %v, want io.EOF", err)
+	if _, err := r.Read(); err != io.EOF {
+		t.Fatalf("Read(2) = %v, want io.EOF", err)
 	}
 }
 
@@ -515,20 +529,20 @@ func TestReadFieldsPerRecordBlankLineDoesNotLearnCount(t *testing.T) {
 	// reports the mismatch: the count is learned from the first non-blank row.
 	r := NewReader(strings.NewReader("\na,b,c\n1,2\n"), WithFieldsPerRecord(0))
 
-	rec, err := r.Next()
+	rec, err := r.Read()
 	if err != nil {
-		t.Fatalf("Next(0): %v", err)
+		t.Fatalf("Read(0): %v", err)
 	}
-	if got := rec.Copy(); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
-		t.Fatalf("Next(0) = %q, want %q", got, []string{"a", "b", "c"})
+	if got := rec.Strings(); !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+		t.Fatalf("Read(0) = %q, want %q", got, []string{"a", "b", "c"})
 	}
 
-	rec, err = r.Next()
+	rec, err = r.Read()
 	if !errors.Is(err, ErrFieldCount) {
-		t.Fatalf("Next(1) error = %v, want ErrFieldCount", err)
+		t.Fatalf("Read(1) error = %v, want ErrFieldCount", err)
 	}
-	if got := rec.Copy(); !reflect.DeepEqual(got, []string{"1", "2"}) {
-		t.Fatalf("Next(1) = %q, want %q", got, []string{"1", "2"})
+	if got := rec.Strings(); !reflect.DeepEqual(got, []string{"1", "2"}) {
+		t.Fatalf("Read(1) = %q, want %q", got, []string{"1", "2"})
 	}
 }
 
@@ -537,22 +551,22 @@ func TestReadFieldsPerRecordChunked(t *testing.T) {
 	input := "\"multi\nline\",x\ny,z\n"
 	r := NewReader(&oneByteReader{data: []byte(input)}, WithFieldsPerRecord(2))
 
-	rec, err := r.Next()
+	rec, err := r.Read()
 	if err != nil {
-		t.Fatalf("Next(0): %v", err)
+		t.Fatalf("Read(0): %v", err)
 	}
 	want0 := []string{"multi\nline", "x"}
-	if got := rec.Copy(); !reflect.DeepEqual(got, want0) {
-		t.Fatalf("Next(0) = %q, want %q", got, want0)
+	if got := rec.Strings(); !reflect.DeepEqual(got, want0) {
+		t.Fatalf("Read(0) = %q, want %q", got, want0)
 	}
 
-	rec, err = r.Next()
+	rec, err = r.Read()
 	if err != nil {
-		t.Fatalf("Next(1): %v", err)
+		t.Fatalf("Read(1): %v", err)
 	}
 	want1 := []string{"y", "z"}
-	if got := rec.Copy(); !reflect.DeepEqual(got, want1) {
-		t.Fatalf("Next(1) = %q, want %q", got, want1)
+	if got := rec.Strings(); !reflect.DeepEqual(got, want1) {
+		t.Fatalf("Read(1) = %q, want %q", got, want1)
 	}
 }
 
@@ -572,17 +586,17 @@ func TestReadFieldsPerRecordNonFatal(t *testing.T) {
 	// ErrFieldCount does not stick: Error() stays nil and reading continues.
 	r := NewReader(strings.NewReader("a,b\nc\n"))
 
-	if _, err := r.Next(); err != nil {
-		t.Fatalf("Next(0): %v", err)
+	if _, err := r.Read(); err != nil {
+		t.Fatalf("Read(0): %v", err)
 	}
-	if _, err := r.Next(); !errors.Is(err, ErrFieldCount) {
-		t.Fatalf("Next(1) error = %v, want ErrFieldCount", err)
+	if _, err := r.Read(); !errors.Is(err, ErrFieldCount) {
+		t.Fatalf("Read(1) error = %v, want ErrFieldCount", err)
 	}
 	if err := r.Error(); err != nil {
 		t.Fatalf("Error() = %v after ErrFieldCount, want nil", err)
 	}
-	if _, err := r.Next(); err != io.EOF {
-		t.Fatalf("Next(2) = %v, want io.EOF", err)
+	if _, err := r.Read(); err != io.EOF {
+		t.Fatalf("Read(2) = %v, want io.EOF", err)
 	}
 	if err := r.Error(); err != nil {
 		t.Fatalf("Error() = %v after EOF, want nil", err)
@@ -595,8 +609,8 @@ func TestReaderFieldsPerRecordAccessor(t *testing.T) {
 	if got := r.FieldsPerRecord(); got != 0 {
 		t.Fatalf("FieldsPerRecord() before read = %d, want 0", got)
 	}
-	if _, err := r.Next(); err != nil {
-		t.Fatalf("Next: %v", err)
+	if _, err := r.Read(); err != nil {
+		t.Fatalf("Read: %v", err)
 	}
 	if got := r.FieldsPerRecord(); got != 2 {
 		t.Fatalf("FieldsPerRecord() after read = %d, want 2", got)
@@ -618,24 +632,24 @@ func TestReaderFieldsPerRecordAccessor(t *testing.T) {
 func TestReadFieldsPerRecordLazyQuotes(t *testing.T) {
 	r := NewReader(strings.NewReader("a\"b,c\n1,2,3\n"), WithLazyQuotes(), WithFieldsPerRecord(2))
 
-	rec, err := r.Next()
+	rec, err := r.Read()
 	if err != nil {
-		t.Fatalf("Next(0): %v", err)
+		t.Fatalf("Read(0): %v", err)
 	}
-	if got := rec.Copy(); !reflect.DeepEqual(got, []string{`a"b`, "c"}) {
-		t.Fatalf("Next(0) = %q, want %q", got, []string{`a"b`, "c"})
+	if got := rec.Strings(); !reflect.DeepEqual(got, []string{`a"b`, "c"}) {
+		t.Fatalf("Read(0) = %q, want %q", got, []string{`a"b`, "c"})
 	}
 
-	rec, err = r.Next()
+	rec, err = r.Read()
 	if !errors.Is(err, ErrFieldCount) {
-		t.Fatalf("Next(1) error = %v, want ErrFieldCount", err)
+		t.Fatalf("Read(1) error = %v, want ErrFieldCount", err)
 	}
-	if got := rec.Copy(); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
-		t.Fatalf("Next(1) = %q, want %q", got, []string{"1", "2", "3"})
+	if got := rec.Strings(); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
+		t.Fatalf("Read(1) = %q, want %q", got, []string{"1", "2", "3"})
 	}
 
-	if _, err := r.Next(); err != io.EOF {
-		t.Fatalf("Next(2) = %v, want io.EOF", err)
+	if _, err := r.Read(); err != io.EOF {
+		t.Fatalf("Read(2) = %v, want io.EOF", err)
 	}
 }
 
@@ -677,12 +691,12 @@ func TestReaderTrimsOversizedBuffer(t *testing.T) {
 	}
 	r := NewReader(&chunkedReader{data: input.Bytes(), step: 4096}, WithFieldsPerRecord(-1))
 
-	rec, err := r.Next()
+	rec, err := r.Read()
 	if err != nil {
-		t.Fatalf("Next(huge): %v", err)
+		t.Fatalf("Read(huge): %v", err)
 	}
-	if rec.Len() != 1 || len(rec.ValueAt(0)) != len(huge) {
-		t.Fatalf("huge record = Len %d, field %d bytes; want 1/%d", rec.Len(), len(rec.ValueAt(0)), len(huge))
+	if rec.Len() != 1 || len(rec.String(0)) != len(huge) {
+		t.Fatalf("huge record = Len %d, field %d bytes; want 1/%d", rec.Len(), len(rec.String(0)), len(huge))
 	}
 	if cap(r.buf) < len(huge) {
 		t.Fatalf("buffer did not grow to fit record: cap=%d, want >= %d", cap(r.buf), len(huge))
@@ -690,14 +704,14 @@ func TestReaderTrimsOversizedBuffer(t *testing.T) {
 
 	n := 0
 	for {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			t.Fatalf("Next(small %d): %v", n, err)
+			t.Fatalf("Read(small %d): %v", n, err)
 		}
-		if got := rec.Copy(); !reflect.DeepEqual(got, []string{"a", "b"}) {
+		if got := rec.Strings(); !reflect.DeepEqual(got, []string{"a", "b"}) {
 			t.Fatalf("row %d = %q, want [a b]", n, got)
 		}
 		n++
@@ -717,21 +731,21 @@ func TestReaderMaxBuffer(t *testing.T) {
 	input := strings.Repeat("a", 40) + "\n" + strings.Repeat("b", 70) + "\n" + strings.Repeat("c", 30) + "\n"
 	r := NewReader(&chunkedReader{data: []byte(input), step: 8}, WithMaxBuffer(64), WithFieldsPerRecord(-1))
 
-	rec, err := r.Next()
+	rec, err := r.Read()
 	if err != nil {
-		t.Fatalf("Next(0): %v", err)
+		t.Fatalf("Read(0): %v", err)
 	}
-	if got := rec.Copy(); len(got[0]) != 40 {
-		t.Fatalf("Next(0) field length = %d, want 40", len(got[0]))
+	if got := rec.Strings(); len(got[0]) != 40 {
+		t.Fatalf("Read(0) field length = %d, want 40", len(got[0]))
 	}
-	if _, err := r.Next(); !errors.Is(err, ErrRecordTooLarge) {
-		t.Fatalf("Next(1) error = %v, want ErrRecordTooLarge", err)
+	if _, err := r.Read(); !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("Read(1) error = %v, want ErrRecordTooLarge", err)
 	}
 	if err := r.Error(); !errors.Is(err, ErrRecordTooLarge) {
 		t.Fatalf("Error() = %v, want ErrRecordTooLarge", err)
 	}
-	if _, err := r.Next(); !errors.Is(err, ErrRecordTooLarge) {
-		t.Fatalf("Next(2) error = %v, want sticky ErrRecordTooLarge", err)
+	if _, err := r.Read(); !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("Read(2) error = %v, want sticky ErrRecordTooLarge", err)
 	}
 }
 
@@ -749,10 +763,10 @@ func TestReaderLiveMemoryBounded(t *testing.T) {
 	r := NewReader(&chunkedReader{data: input.Bytes(), step: 4096}, WithFieldsPerRecord(-1))
 
 	for {
-		if _, err := r.Next(); err == io.EOF {
+		if _, err := r.Read(); err == io.EOF {
 			break
 		} else if err != nil {
-			t.Fatalf("Next: %v", err)
+			t.Fatalf("Read: %v", err)
 		}
 	}
 
@@ -889,7 +903,7 @@ func readAllZerocsvFPR(input string) fprResult {
 	r := NewReader(strings.NewReader(input)) // WithFieldsPerRecord defaults to 0
 	var res fprResult
 	for {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err == io.EOF {
 			return res
 		}
@@ -902,7 +916,7 @@ func readAllZerocsvFPR(input string) fprResult {
 		} else {
 			res.errs = append(res.errs, nil)
 		}
-		res.rows = append(res.rows, rec.Copy())
+		res.rows = append(res.rows, rec.Strings())
 	}
 }
 

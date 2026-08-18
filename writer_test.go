@@ -10,39 +10,45 @@ import (
 	"runtime"
 	"strconv"
 	"testing"
-	"time"
+	"unsafe"
 )
 
 // --- constructors ---------------------------------------------------------
 
 func TestColumnConstructors(t *testing.T) {
-	if c := ColumnString("hi"); c.kind != columnString || c.s != "hi" {
+	if c := ColumnString("hi"); c.kind != columnString || c.Kind() != ColumnKindString || c.s != "hi" {
 		t.Fatalf("ColumnString: %+v", c)
 	}
-	if c := ColumnBytes([]byte("hi")); c.kind != columnBytes || string(c.bs) != "hi" {
+	if c := ColumnBytes([]byte("hi")); c.kind != columnBytes || c.Kind() != ColumnKindBytes || c.s != "hi" {
 		t.Fatalf("ColumnBytes: %+v", c)
 	}
-	if c := ColumnInt(-42); c.kind != columnInt || int64(c.n) != -42 {
+	if c := ColumnInt(-42); c.kind != columnInt || c.Kind() != ColumnKindInt || int64(c.n) != -42 {
 		t.Fatalf("ColumnInt: %+v", c)
 	}
-	if c := ColumnUint(42); c.kind != columnUint || c.n != 42 {
+	if c := ColumnUint(42); c.kind != columnUint || c.Kind() != ColumnKindUint || c.n != 42 {
 		t.Fatalf("ColumnUint: %+v", c)
 	}
-	if c := ColumnFloat64(2.5); c.kind != columnFloat || math.Float64frombits(c.n) != 2.5 {
+	if c := ColumnFloat64(2.5); c.kind != columnFloat || c.Kind() != ColumnKindFloat || math.Float64frombits(c.n) != 2.5 {
 		t.Fatalf("ColumnFloat64: %+v", c)
 	}
-	if c := ColumnBool(true); c.kind != columnBool || c.n != 1 {
+	if c := ColumnFloat32(1.5); c.kind != columnFloat32 || c.Kind() != ColumnKindFloat32 || math.Float64frombits(c.n) != 1.5 {
+		t.Fatalf("ColumnFloat32: %+v", c)
+	}
+	if c := ColumnBool(true); c.kind != columnBool || c.Kind() != ColumnKindBool || c.n != 1 {
 		t.Fatalf("ColumnBool(true): %+v", c)
 	}
-	if c := ColumnBool(false); c.kind != columnBool || c.n != 0 {
+	if c := ColumnBool(false); c.kind != columnBool || c.Kind() != ColumnKindBool || c.n != 0 {
 		t.Fatalf("ColumnBool(false): %+v", c)
 	}
-	tm := time.Unix(1, 0).UTC()
-	if c := ColumnTime(tm, time.RFC3339); c.kind != columnTime || !c.t.Equal(tm) || c.s != time.RFC3339 {
-		t.Fatalf("ColumnTime: %+v", c)
+	tv := testFieldValuer{"x"}
+	if c := ColumnValuer(tv); c.kind != columnValuer || c.Kind() != ColumnKindValuer || c.valuer != tv {
+		t.Fatalf("ColumnValuer: %+v", c)
 	}
-	if c := ColumnAny(123); c.kind != columnAny || c.v != 123 {
-		t.Fatalf("ColumnAny: %+v", c)
+}
+
+func TestColumnStructSize(t *testing.T) {
+	if sz := unsafe.Sizeof(Column{}); sz != 48 {
+		t.Fatalf("sizeof(Column) = %d bytes, want 48 bytes", sz)
 	}
 }
 
@@ -161,7 +167,7 @@ func TestWriteFloat32(t *testing.T) {
 }
 
 func TestWithDelimiterInvalid(t *testing.T) {
-	for _, c := range []byte{0, '"', '\r', '\n'} {
+	for _, c := range []byte{0, '"', '\r', '\n', 0x80, 0xff, 'é'} {
 		w := NewWriter(io.Discard, WithDelimiter(c))
 		if err := w.Error(); err != ErrInvalidDelim {
 			t.Errorf("WithDelimiter(%q): got err %v, want %v", c, err, ErrInvalidDelim)
@@ -182,11 +188,9 @@ func TestWriteAll(t *testing.T) {
 		{ColumnString("a"), ColumnInt(1)},
 		{ColumnString("c"), ColumnFloat64(2.5)},
 	}
+	// WriteAll flushes automatically like encoding/csv
 	if err := w.WriteAll(rows); err != nil {
 		t.Fatalf("WriteAll: %v", err)
-	}
-	if err := w.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
 	}
 	if got, want := buf.String(), "a,1\nc,2.5\n"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -209,9 +213,6 @@ func TestWriteQuoting(t *testing.T) {
 	if err := w.WriteAll(rows); err != nil {
 		t.Fatalf("WriteAll: %v", err)
 	}
-	if err := w.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
 	want := "" +
 		"simple,field\n" +
 		`"comma,inside",plain` + "\n" +
@@ -224,16 +225,16 @@ func TestWriteQuoting(t *testing.T) {
 	}
 }
 
-func TestWriteAnyQuotes(t *testing.T) {
+func TestWriteValuerQuotes(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
-	if err := w.Write(ColumnAny("a,b"), ColumnAny("plain")); err != nil {
+	if err := w.Write(ColumnValuer(testFieldValuer{"a,b"}), ColumnValuer(testFieldValuer{"plain"}), ColumnValuer(nil)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if err := w.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	if got, want := buf.String(), "\"a,b\",plain\n"; got != want {
+	if got, want := buf.String(), "\"a,b\",plain,\n"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
@@ -305,50 +306,26 @@ func TestWriteCombinedOptions(t *testing.T) {
 	}
 }
 
-// --- time -----------------------------------------------------------------
+// --- custom valuer --------------------------------------------------------
 
-func TestWriteTime(t *testing.T) {
-	var buf bytes.Buffer
-	w := NewWriter(&buf)
-	loc := time.FixedZone("", 7*3600)
-	tm := time.Date(2026, 8, 17, 12, 34, 56, 0, loc)
-	if err := w.Write(ColumnTime(tm, time.RFC3339)); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if err := w.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-	if got, want := buf.String(), "2026-08-17T12:34:56+07:00\n"; got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
+type testFieldValuer struct {
+	text string
 }
 
-func TestWriteTimeLayout(t *testing.T) {
-	var buf bytes.Buffer
-	w := NewWriter(&buf)
-	tm := time.Date(2026, 8, 17, 12, 34, 56, 0, time.UTC)
-	if err := w.Write(ColumnTime(tm, "2006-01-02"), ColumnTime(tm, "15:04:05")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if err := w.Flush(); err != nil {
-		t.Fatalf("Flush: %v", err)
-	}
-	if got, want := buf.String(), "2026-08-17,12:34:56\n"; got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
+func (v testFieldValuer) AppendCSV(dst []byte) ([]byte, error) {
+	return append(dst, v.text...), nil
 }
 
-func TestWriteTimeCommaInLayout(t *testing.T) {
+func TestWriteFieldValuer(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
-	tm := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
-	if err := w.Write(ColumnTime(tm, "2006,01,02")); err != nil {
+	if err := w.Write(ColumnValuer(testFieldValuer{"custom,val"}), ColumnValuer(nil)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if err := w.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	if got, want := buf.String(), "\"2026,08,17\"\n"; got != want {
+	if got, want := buf.String(), "\"custom,val\",\n"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
@@ -458,7 +435,8 @@ func TestWriteWithBufioUnderlying(t *testing.T) {
 func TestWriteZeroAllocs(t *testing.T) {
 	stringCols := []Column{ColumnString("alpha"), ColumnString("beta"), ColumnString("gamma")}
 	mixedCols := []Column{ColumnString("alpha"), ColumnInt(42), ColumnFloat64(3.14), ColumnBool(true)}
-	timeCols := []Column{ColumnString("ts"), ColumnTime(time.Unix(1, 0).UTC(), time.RFC3339)}
+	bytesCols := []Column{ColumnString("ts"), ColumnBytes([]byte("2026-08-17T12:34:56Z"))}
+	valuerCols := []Column{ColumnString("val"), ColumnValuer(testFieldValuer{"custom"})}
 
 	tests := []struct {
 		name string
@@ -466,7 +444,8 @@ func TestWriteZeroAllocs(t *testing.T) {
 	}{
 		{"strings", stringCols},
 		{"mixed", mixedCols},
-		{"time", timeCols},
+		{"bytes", bytesCols},
+		{"valuer", valuerCols},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -496,7 +475,7 @@ func TestWriteZeroAllocsBufioUnderlying(t *testing.T) {
 }
 
 func TestFirstWriteZeroAllocs(t *testing.T) {
-	cols := []Column{ColumnInt(42), ColumnFloat64(3.14), ColumnTime(time.Unix(1, 0).UTC(), time.RFC3339), ColumnBool(true)}
+	cols := []Column{ColumnInt(42), ColumnFloat64(3.14), ColumnBytes([]byte("raw-bytes")), ColumnBool(true)}
 	w := NewWriter(io.Discard)
 
 	runtime.GC()

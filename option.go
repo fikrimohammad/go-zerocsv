@@ -24,9 +24,10 @@ func defaultOptions() *options {
 }
 
 // WithDelimiter sets the field delimiter, for example ',' for CSV, '\t' for
-// TSV, or ';' for semicolon-separated values. The NUL byte, '"', '\r' and
-// '\n' are rejected: an invalid delimiter marks a Writer or Reader as failed,
-// and Next, Write, WriteAll, Flush and Error report the error.
+// TSV, or ';' for semicolon-separated values. Only single ASCII bytes are
+// supported. The NUL byte, '"', '\r', '\n' and any byte above '\x7f' are
+// rejected: an invalid delimiter marks a Writer or Reader as failed, and Read,
+// ReadAll, Write, WriteAll, Flush and Error report the error.
 func WithDelimiter(d byte) Option {
 	return func(o *options) {
 		o.delimiter = d
@@ -52,9 +53,9 @@ func WithLazyQuotes() Option {
 // WithFieldsPerRecord sets the expected number of fields per record, applying
 // to both the Reader and the Writer.
 //
-// If n is positive, Next and Write require every record to have exactly n
-// fields and return ErrFieldCount otherwise. If n is 0, the count is taken
-// from the first record and enforced on all subsequent ones, like
+// If n is positive, Read, ReadAll and Write require every record to have
+// exactly n fields and return ErrFieldCount otherwise. If n is 0, the count is
+// taken from the first record and enforced on all subsequent ones, like
 // encoding/csv's default. If n is negative, no check is made and records may
 // have a variable number of fields. Blank lines read by the Reader never take
 // part in the check.
@@ -69,7 +70,7 @@ func WithFieldsPerRecord(n int) Option {
 }
 
 // WithMaxBuffer caps the Reader's internal buffer at n bytes. A record larger
-// than n cannot be parsed in memory, so Next returns ErrRecordTooLarge rather
+// than n cannot be parsed in memory, so Read returns ErrRecordTooLarge rather
 // than letting the buffer grow without bound. A non-positive n means no limit
 // (the default).
 func WithMaxBuffer(n int) Option {
@@ -78,6 +79,10 @@ func WithMaxBuffer(n int) Option {
 	}
 }
 
+// validDelim reports whether c is a usable delimiter. Delimiters above '\x7f'
+// are rejected: the parser scans single bytes, so a multi-byte UTF-8 delimiter
+// could never match, and a raw non-ASCII byte would silently corrupt the
+// parsing of any multibyte text.
 func validDelim(c byte) bool {
-	return c != 0 && c != '"' && c != '\r' && c != '\n'
+	return c != 0 && c != '"' && c != '\r' && c != '\n' && c <= 0x7f
 }

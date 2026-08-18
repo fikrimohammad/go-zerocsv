@@ -8,9 +8,9 @@ import (
 // Reader reads CSV records with zero allocations per record.
 //
 // The input buffer and the field slice are allocated once in NewReader and
-// reused for the lifetime of the Reader. The fields of a Record returned by
-// Next are zero-copy views into that buffer, so they are valid only until the
-// next call to Next.
+// reused for the lifetime of the Reader. Read returns records lazily one at
+// a time with zero heap allocations, while ReadAll eagerly reads all remaining
+// records into a slice of owned Records.
 type Reader struct {
 	r          io.Reader
 	delimiter  byte
@@ -18,6 +18,7 @@ type Reader struct {
 
 	fieldsPerRecord int // expected fields per record; see WithFieldsPerRecord
 	maxBuf          int // buffer size cap; see WithMaxBuffer
+	recordsRead     int // records returned so far; backs IsFirst
 
 	buf   []byte // reusable input buffer
 	start int    // first unprocessed byte
@@ -25,7 +26,7 @@ type Reader struct {
 	eof   bool
 
 	err        error       // sticky configuration error
-	rec        Record      // reused record wrapper
+	rec        rawRecord   // reused record wrapper
 	fields     [][]byte    // reused field views
 	fieldSpans []fieldSpan // field boundaries recorded by scan, consumed by decode
 }
@@ -39,41 +40,18 @@ type fieldSpan struct {
 	closed bool
 }
 
-// Record is a parsed CSV record. The Reader reuses a single Record and
-// overwrites it on every call to Next, so a Record is valid only until the
-// Reader is advanced again. Its fields are zero-copy views into the Reader's
-// internal buffer; use Copy to retain the values beyond the next call to Next.
-type Record struct {
+// rawRecord is an unexported parsed CSV record backing Reader.next.
+type rawRecord struct {
 	fields [][]byte
 }
 
-// Len returns the number of fields in the record.
-func (r *Record) Len() int {
+func (r *rawRecord) len() int {
 	return len(r.fields)
 }
 
-// ValueAt returns the field at index idx as a zero-copy view into the
-// Reader's internal buffer. The slice is valid only until the next call to
-// Next on the Reader that produced the Record. Convert it to a string to get
-// an owned copy, since string(v) always copies. It panics if idx is negative
-// or not less than Len.
-func (r *Record) ValueAt(idx int) []byte {
-	return r.fields[idx]
-}
-
-// Copy returns the record's fields as owned strings. The returned slice and
-// its strings remain valid after subsequent calls to Next.
-func (r *Record) Copy() []string {
-	out := make([]string, len(r.fields))
-	for i, f := range r.fields {
-		out[i] = string(f)
-	}
-	return out
-}
-
 // NewReader returns a Reader that parses CSV records from r, applying opts.
-// An invalid delimiter marks the Reader as failed; Next and Error report the
-// error.
+// An invalid delimiter marks the Reader as failed; Read, ReadAll and Error
+// report the error.
 func NewReader(r io.Reader, opts ...Option) *Reader {
 	o := defaultOptions()
 	for _, opt := range opts {
@@ -92,22 +70,9 @@ func NewReader(r io.Reader, opts ...Option) *Reader {
 	return rd
 }
 
-// Next parses and returns the next record, or io.EOF when no records remain.
-// It returns ErrBareQuote or ErrQuote for malformed quoting, unless
-// WithLazyQuotes is in effect, and propagates any error from the underlying
-// reader.
-//
-// If a field count is in effect (see WithFieldsPerRecord) and the record has
-// a different number of fields, Next returns the record along with
-// ErrFieldCount. Like encoding/csv, this error is non-fatal: the returned
-// Record is valid and reading may continue.
-//
-// The returned Record is reused by the Reader and overwritten by each call to
-// Next. Its fields are zero-copy views into the Reader's internal buffer and
-// are valid only until the next call to Next, like encoding/csv's ReuseRecord
-// mode. Copy a field with Record.Copy, or convert it to a string, if it must
-// outlive the read loop.
-func (r *Reader) Next() (*Record, error) {
+// next parses and returns the next raw record, or io.EOF when no records remain.
+func (r *Reader) next() (*rawRecord, error) {
+	r.rec.fields = nil
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -125,7 +90,8 @@ func (r *Reader) Next() (*Record, error) {
 			}
 			r.rec.fields = r.decode()
 			r.start = recEnd + nlLen
-			if err := r.checkFieldCount(r.rec.Len()); err != nil {
+			r.recordsRead++
+			if err := r.checkFieldCount(r.rec.len()); err != nil {
 				return &r.rec, err
 			}
 			return &r.rec, nil
@@ -140,10 +106,59 @@ func (r *Reader) Next() (*Record, error) {
 	}
 }
 
+// Read reads one record from r. The returned Record provides zero-allocation
+// access to fields via Scan, or safe access via String, Bytes, and Strings.
+//
+// If the record has an unexpected number of fields (see WithFieldsPerRecord),
+// Read returns the Record along with ErrFieldCount. Like encoding/csv, this
+// error is non-fatal: the record is usable and subsequent calls to Read
+// continue reading the stream.
+//
+// If no more records remain, Read returns a zero Record with io.EOF.
+func (r *Reader) Read() (Record, error) {
+	rec, err := r.next()
+	if rec == nil {
+		return Record{}, err
+	}
+	return Record{
+		err:     err,
+		isFirst: r.recordsRead == 1,
+		fields:  rec.fields,
+	}, err
+}
+
+// ReadAll reads all remaining records from r into a slice of Records.
+// Each Record in the returned slice owns its field data and remains valid
+// indefinitely. A successful call returns err == nil (io.EOF is treated as
+// normal completion).
+//
+// If an error (such as ErrFieldCount or a parse error) is encountered,
+// ReadAll stops immediately and returns the records read so far along with
+// the error, matching encoding/csv.ReadAll semantics.
+func (r *Reader) ReadAll() ([]Record, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	var records []Record
+	for {
+		rec, err := r.Read()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return records, nil
+			}
+			if errors.Is(err, ErrFieldCount) {
+				records = append(records, rec.clone())
+			}
+			return records, err
+		}
+		records = append(records, rec.clone())
+	}
+}
+
 // checkFieldCount enforces the expected fields per record. A positive count
 // requires every record to match it and returns ErrFieldCount otherwise; a
 // zero count is learned from the first record. Blank lines never reach this
-// check because Next skips them before decode.
+// check because next skips them before decode.
 func (r *Reader) checkFieldCount(n int) error {
 	if r.fieldsPerRecord > 0 {
 		if n != r.fieldsPerRecord {
@@ -177,7 +192,7 @@ func (r *Reader) FieldsPerRecord() int {
 // of the line terminator, the terminator length (1 or 2 for CRLF), and
 // whether a complete record was found. A (false, nil) result means the record
 // spans the current buffer and more data is needed; when eof is set it means
-// no data remains and Next returns io.EOF.
+// no data remains and Read returns io.EOF.
 func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 	r.fieldSpans = r.fieldSpans[:0]
 	pos := r.start
@@ -294,7 +309,7 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 
 	if r.eof {
 		if pos == r.start {
-			// No data at all in this buffer; Next reports io.EOF.
+			// No data at all in this buffer; Read reports io.EOF.
 			return 0, 0, false, nil
 		}
 		if inQuotes {
@@ -317,7 +332,7 @@ func (r *Reader) recordSpan(fieldStart, pos int, closed bool) {
 // recordField records the final field of the record ending at recEnd with a
 // terminator of length nlLen (0 for a final record without a trailing
 // newline) and returns a complete record. A blank line records no fields and
-// is skipped by Next.
+// is skipped by Read.
 func (r *Reader) recordField(recEnd, nlLen int, fieldStart, pos int, closed bool) (int, int, bool, error) {
 	if pos != fieldStart || len(r.fieldSpans) != 0 {
 		r.recordSpan(fieldStart, pos, closed)
@@ -444,7 +459,7 @@ func (r *Reader) fill() error {
 // ErrBareQuote is returned when a bare '"' appears in a non-quoted field.
 var ErrBareQuote = errors.New("bare \" in non-quoted field")
 
-// ErrRecordTooLarge is returned by Next when a record is larger than the
+// ErrRecordTooLarge is returned by Read when a record is larger than the
 // maximum buffer size configured with WithMaxBuffer and therefore cannot be
 // parsed in memory. Reading cannot continue past the record.
 var ErrRecordTooLarge = errors.New("zerocsv: record larger than the maximum buffer size")
@@ -452,7 +467,7 @@ var ErrRecordTooLarge = errors.New("zerocsv: record larger than the maximum buff
 // ErrQuote is returned for an extraneous or missing '"' in a quoted field.
 var ErrQuote = errors.New("extraneous or missing \" in quoted-field")
 
-// ErrFieldCount is returned by Next or Write when a record's field count does
+// ErrFieldCount is returned by Read or Write when a record's field count does
 // not match the expected number of fields (see WithFieldsPerRecord). It is
 // non-fatal, like encoding/csv: the record is still returned or written and
 // reading or writing can continue.

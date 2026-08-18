@@ -12,14 +12,14 @@ import (
 	zerocsv "github.com/fikrimohammad/go-zerocsv"
 )
 
-// BenchmarkScale compares zerocsv against encoding/csv at fixed row counts,
+// BenchmarkWriteScale compares zerocsv against encoding/csv at fixed row counts,
 // one write of n rows per iteration. Run with:
 //
-//	go test -bench BenchmarkScale -benchmem ./benchmark
+//	go test -bench BenchmarkWriteScale -benchmem ./benchmark
 //
 // ns/op gives per-write cost (n rows), allocs/op and B/op give the allocation
 // profile for writing n rows. Throughput is n / (ns/op).
-func BenchmarkScale(b *testing.B) {
+func BenchmarkWriteScale(b *testing.B) {
 	sizes := []int{100_000, 500_000, 1_000_000, 5_000_000}
 	for _, n := range sizes {
 		b.Run(fmt.Sprintf("zerocsv/%d", n), func(b *testing.B) {
@@ -41,13 +41,14 @@ func writeZerocsv(w io.Writer, n int) {
 	zw := zerocsv.NewWriter(w)
 	cols := make([]zerocsv.Column, 6)
 	ts := time.Date(2026, 8, 17, 12, 34, 56, 0, time.UTC)
+	var timeScratch [32]byte
 	for i := 0; i < n; i++ {
 		cols[0] = zerocsv.ColumnInt(i)
 		cols[1] = zerocsv.ColumnString(benchNames[i%len(benchNames)])
 		cols[2] = zerocsv.ColumnInt64(int64(i) * 1000)
 		cols[3] = zerocsv.ColumnFloat64(float64(i) * 0.5)
 		cols[4] = zerocsv.ColumnBool(i%2 == 0)
-		cols[5] = zerocsv.ColumnTime(ts, time.RFC3339)
+		cols[5] = zerocsv.ColumnBytes(ts.AppendFormat(timeScratch[:0], time.RFC3339))
 		_ = zw.Write(cols...)
 	}
 	_ = zw.Flush()
@@ -122,16 +123,14 @@ func readZerocsv(data []byte) {
 	r := zerocsv.NewReader(bytes.NewReader(data))
 	fields := 0
 	for {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			panic(err)
 		}
-		for i := 0; i < rec.Len(); i++ {
-			fields += len(rec.ValueAt(i))
-		}
+		fields += rec.Len()
 	}
 	if fields < 0 {
 		panic(fields)
