@@ -140,17 +140,15 @@ func BenchmarkRead(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err == io.EOF {
 			r = zerocsv.NewReader(strings.NewReader(benchCSV))
-			rec, err = r.Next()
+			rec, err = r.Read()
 		}
 		if err != nil {
 			b.Fatal(err)
 		}
-		for j := 0; j < rec.Len(); j++ {
-			_ = rec.ValueAt(j)
-		}
+		_ = rec.Len()
 	}
 }
 

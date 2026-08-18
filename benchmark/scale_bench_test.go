@@ -122,16 +122,14 @@ func readZerocsv(data []byte) {
 	r := zerocsv.NewReader(bytes.NewReader(data))
 	fields := 0
 	for {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			panic(err)
 		}
-		for i := 0; i < rec.Len(); i++ {
-			fields += len(rec.ValueAt(i))
-		}
+		fields += rec.Len()
 	}
 	if fields < 0 {
 		panic(fields)

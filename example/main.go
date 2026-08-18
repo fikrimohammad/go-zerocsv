@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -107,7 +106,7 @@ bob,40
 `
 	r := zerocsv.NewReader(strings.NewReader(input))
 	for {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err == io.EOF {
 			break
 		}
@@ -115,27 +114,40 @@ bob,40
 			fmt.Fprintln(os.Stderr, err)
 			return
 		}
-		// Fields are zero-copy views into the reader's buffer: convert them
-		// to strings (which copies) if they must outlive the next Next.
 		fmt.Printf("record: %d fields\n", rec.Len())
 		for i := 0; i < rec.Len(); i++ {
-			fmt.Printf("  %d: %q\n", i, rec.ValueAt(i))
+			fmt.Printf("  %d: %q\n", i, rec.String(i))
 		}
 	}
 }
 
 func readTyped() {
 	fmt.Println("--- read typed ---")
-	input := "id,name,score,active\n1,alice,3.14,true\n"
+	input := "id,name,score,active\n1,alice,3.14,true\n2,bob,2.5,false\n"
 	r := zerocsv.NewReader(strings.NewReader(input))
-	_, _ = r.Next() // skip header
-	rec, err := r.Next()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return
+		}
+		if rec.IsFirst() {
+			fmt.Printf("header: %s\n", strings.Join(rec.Strings(), ", "))
+			continue
+		}
+		var (
+			id     int
+			name   string
+			score  float64
+			active bool
+		)
+		if err := rec.Scan(&id, &name, &score, &active); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return
+		}
+		fmt.Printf("id=%d name=%s score=%.2f active=%t\n", id, name, score, active)
 	}
-	id, _ := strconv.ParseInt(string(rec.ValueAt(0)), 10, 64)
-	score, _ := strconv.ParseFloat(string(rec.ValueAt(2)), 64)
-	active, _ := strconv.ParseBool(string(rec.ValueAt(3)))
-	fmt.Printf("id=%d name=%s score=%f active=%t\n", id, rec.ValueAt(1), score, active)
 }

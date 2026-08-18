@@ -112,15 +112,15 @@ func (w *Writer) checkFieldCount(n int) error {
 	return nil
 }
 
-// WriteAll writes each row of rows as a CSV record to the underlying writer
-// and returns the first error encountered, if any.
+// WriteAll writes each row of rows as a CSV record to the underlying writer,
+// flushes any buffered data, and returns the first error encountered, if any.
 func (w *Writer) WriteAll(rows [][]Column) error {
 	for _, row := range rows {
 		if err := w.Write(row...); err != nil {
 			return err
 		}
 	}
-	return nil
+	return w.Flush()
 }
 
 // Flush writes any buffered data to the underlying writer and returns the
@@ -175,7 +175,11 @@ func (w *Writer) writeColumn(c *Column) {
 		w.scratch = c.t.AppendFormat(w.scratch[:0], c.s)
 		w.writeFieldBytes(w.scratch)
 	case columnAny:
-		w.writeField(fmt.Sprint(c.v))
+		if c.v == nil {
+			w.writeField("")
+		} else {
+			w.writeField(fmt.Sprint(c.v))
+		}
 	}
 }
 

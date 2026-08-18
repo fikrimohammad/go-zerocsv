@@ -9,15 +9,27 @@ import (
 type ColumnKind uint8
 
 const (
-	columnString ColumnKind = iota
-	columnBytes
-	columnInt
-	columnUint
-	columnFloat
-	columnFloat32
-	columnBool
-	columnTime
-	columnAny
+	ColumnKindString ColumnKind = iota
+	ColumnKindBytes
+	ColumnKindInt
+	ColumnKindUint
+	ColumnKindFloat
+	ColumnKindFloat32
+	ColumnKindBool
+	ColumnKindTime
+	ColumnKindAny
+)
+
+const (
+	columnString  = ColumnKindString
+	columnBytes   = ColumnKindBytes
+	columnInt     = ColumnKindInt
+	columnUint    = ColumnKindUint
+	columnFloat   = ColumnKindFloat
+	columnFloat32 = ColumnKindFloat32
+	columnBool    = ColumnKindBool
+	columnTime    = ColumnKindTime
+	columnAny     = ColumnKindAny
 )
 
 // Column is a tagged, value-typed CSV field. Pass it to Write by value;
@@ -30,6 +42,11 @@ type Column struct {
 	n    uint64
 	v    any
 	t    time.Time
+}
+
+// Kind returns the ColumnKind of c.
+func (c Column) Kind() ColumnKind {
+	return c.kind
 }
 
 // ColumnString returns a Column containing s.

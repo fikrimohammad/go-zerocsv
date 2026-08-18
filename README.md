@@ -13,9 +13,14 @@ against `encoding/csv`.
 
 ## Features
 
-- **Zero allocations on the hot path**: each `Write` and each `Next` parses
+- **Zero allocations on the hot path**: each `Write` and lazy `Read` parses
   without heap allocation; the buffer and field slices are allocated once and
   reused.
+- **`database/sql`-style typed scanning**: `Record.Scan(&id, &name, &score)`
+  parses numeric, boolean, and slice fields in-place with zero allocations and
+  protects against scratch buffer mutation.
+- **Eager & Lazy reading APIs**: use lazy `Read()` for streaming with flat memory
+  or `ReadAll()` to eagerly load all records into safe, owned storage.
 - **Field-count validation**: like `encoding/csv`, records are checked to have
   a consistent number of fields (auto-detected from the first record) on both
   read and write, unless disabled with `WithFieldsPerRecord(-1)`.
@@ -65,7 +70,7 @@ func main() {
 }
 ```
 
-### Reading
+### Reading (Typed & Zero-Allocation)
 
 ```go
 package main
@@ -80,26 +85,50 @@ import (
 )
 
 func main() {
-	input := "name,age\nAlice,30\nBob,40\n"
+	input := "id,name,score,active\n1,Alice,3.14,true\n2,Bob,2.50,false\n"
 	r := zerocsv.NewReader(strings.NewReader(input))
 
 	for {
-		rec, err := r.Next()
+		rec, err := r.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			log.Fatal(err)
 		}
-		for i := 0; i < rec.Len(); i++ {
-			fmt.Printf("%d:%s ", i, rec.ValueAt(i))
+		if rec.IsFirst() {
+			continue // skip header
 		}
-		fmt.Println()
+
+		var (
+			id     int
+			name   string
+			score  float64
+			active bool
+		)
+		if err := rec.Scan(&id, &name, &score, &active); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("id=%d name=%s score=%.2f active=%t\n", id, name, score, active)
 	}
 }
 ```
 
 ## Advanced Usage
+
+### Eager Reading with `ReadAll()`
+
+To eagerly load all remaining CSV records into safe, owned `Record`s:
+
+```go
+records, err := r.ReadAll()
+if err != nil {
+	log.Fatal(err)
+}
+for _, rec := range records {
+	fmt.Println(rec.Strings())
+}
+```
 
 ### Custom options
 
@@ -129,7 +158,7 @@ w := zerocsv.NewWriter(buf)
 fmt.Println(w.FieldsPerRecord()) // 0 until the first record is written
 ```
 
-### Typed columns
+### Typed columns (Writer)
 
 ```go
 w.Write(
@@ -232,8 +261,8 @@ conversions — 259 MB of cumulative allocation for 5M rows.
 
 | Benchmark | ns/op | B/op | allocs/op |
 | --------- | ----: | ---: | --------: |
-| zerocsv `Next` | 54.6 | 19 | 0 |
-| `encoding/csv` `Read` | 116.4 | 114 | 2 |
+| zerocsv `Read` | 53.7 | 19 | 0 |
+| `encoding/csv` `Read` | 114.7 | 114 | 2 |
 
 ### Writing — per record
 
@@ -268,7 +297,7 @@ go-zerocsv intentionally does not implement every `encoding/csv` feature:
 - The delimiter is a single byte; multi-rune delimiters are not supported.
 - Comment lines are not recognized, and leading whitespace is never trimmed.
 - The parser cannot resume after a malformed record: once a parse error
-  occurs, `Next` keeps returning it. (Field-count mismatches are the exception
+  occurs, `Read` and `ReadAll` keep returning it. (Field-count mismatches are the exception
   and are non-fatal, matching `encoding/csv`.)
 
 ## Contributing
