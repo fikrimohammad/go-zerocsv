@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"reflect"
 	"runtime"
 	"strconv"
 	"testing"
@@ -754,4 +755,66 @@ func FuzzWriterFieldCount(f *testing.F) {
 			t.Fatalf("output mismatch: got %q, want %q", buf.String(), want)
 		}
 	})
+}
+
+func TestWriterMultiByteRune(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf, WithDelimiterRune('§'))
+	if err := w.Write(ColumnString("hello"), ColumnInt(42), ColumnString("contains§delim")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	// "contains§delim" must be quoted because it contains the '§' delimiter
+	want := "hello§42§\"contains§delim\"\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestWriterMultiCharString(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf, WithDelimiterString("||"))
+	if err := w.Write(ColumnString("a"), ColumnString("b||c"), ColumnBool(true)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	want := "a||\"b||c\"||true\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestWriterMultiByteRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf, WithDelimiterString("~|~"))
+	rows := [][]Column{
+		{ColumnString("col1"), ColumnString("col2"), ColumnString("col3")},
+		{ColumnInt(1), ColumnString("val~|~with~|~delim"), ColumnFloat64(3.14)},
+		{ColumnString("quote\"inside"), ColumnBool(false), ColumnString("")},
+	}
+	if err := w.WriteAll(rows); err != nil {
+		t.Fatalf("WriteAll: %v", err)
+	}
+
+	r := NewReader(&buf, WithDelimiterString("~|~"))
+	readRows, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(readRows) != 3 {
+		t.Fatalf("got %d rows, want 3", len(readRows))
+	}
+	if want := []string{"col1", "col2", "col3"}; !reflect.DeepEqual(readRows[0].Strings(), want) {
+		t.Fatalf("row 0: got %v, want %v", readRows[0].Strings(), want)
+	}
+	if want := []string{"1", "val~|~with~|~delim", "3.14"}; !reflect.DeepEqual(readRows[1].Strings(), want) {
+		t.Fatalf("row 1: got %v, want %v", readRows[1].Strings(), want)
+	}
+	if want := []string{`quote"inside`, "false", ""}; !reflect.DeepEqual(readRows[2].Strings(), want) {
+		t.Fatalf("row 2: got %v, want %v", readRows[2].Strings(), want)
+	}
 }
