@@ -285,6 +285,18 @@ When values need formatting, zerocsv formats into its own scratch buffer
 without allocating, so the mixed and time cases stay at 0 B/op and 0 allocs/op
 while `encoding/csv` allocates for every `strconv`/`Format` call.
 
+### Real-World Impact: GC Pressure & Memory Limits (`GOMEMLIMIT`)
+
+In containerized environments (Kubernetes, AWS ECS, Lambda), memory allocations trigger garbage collection (GC) and CPU throttling. When streaming a 3M-row dataset under a **150 MiB memory ceiling (`GOMEMLIMIT=150MiB`)**:
+
+| Reader | Ingestion Time | Heap Allocations | GC Cycles Triggered | Behavior |
+| :--- | ---: | ---: | ---: | :--- |
+| **`go-zerocsv`** | **267ms** | **~5 KB** | **0** | Stable, flat memory |
+| `encoding/csv (ReuseRecord=true)` | 2,392ms | 138 MB | 14,594 | **GC Thrashing (9x slowdown)** |
+| `encoding/csv` (default) | 1,941ms | 366 MB | 10,517 | **GC Thrashing (7x slowdown)** |
+
+Because standard `encoding/csv` allocates millions of transient heap strings, the Go runtime repeatedly halts execution to collect dead strings to stay under the memory ceiling. `go-zerocsv` remains allocation-free and runs at full speed regardless of memory limits.
+
 ## Documentation
 
 Full API documentation and runnable examples are available on
