@@ -287,15 +287,26 @@ while `encoding/csv` allocates for every `strconv`/`Format` call.
 
 ### Real-World Impact: GC Pressure & Memory Limits (`GOMEMLIMIT`)
 
-In containerized environments (Kubernetes, AWS ECS, Lambda), memory allocations trigger garbage collection (GC) and CPU throttling. When streaming a 3M-row dataset under a **150 MiB memory ceiling (`GOMEMLIMIT=150MiB`)**:
+In containerized environments (Kubernetes, AWS ECS, Lambda), memory allocations trigger garbage collection (GC) cycles and CPU throttling. Below is the performance of streaming 3M rows under a **150 MiB memory ceiling (`GOMEMLIMIT=150MiB`)**:
 
-| Reader | Ingestion Time | Heap Allocations | GC Cycles Triggered | Behavior |
+#### 1. Reading (Streaming Ingestion)
+
+| Reader | Ingestion Time | Cumulative Heap Alloc | GC Cycles Triggered | Behavior |
 | :--- | ---: | ---: | ---: | :--- |
 | **`go-zerocsv`** | **267ms** | **~5 KB** | **0** | Stable, flat memory |
 | `encoding/csv (ReuseRecord=true)` | 2,392ms | 138 MB | 14,594 | **GC Thrashing (9x slowdown)** |
 | `encoding/csv` (default) | 1,941ms | 366 MB | 10,517 | **GC Thrashing (7x slowdown)** |
 
-Because standard `encoding/csv` allocates millions of transient heap strings, the Go runtime repeatedly halts execution to collect dead strings to stay under the memory ceiling. `go-zerocsv` remains allocation-free and runs at full speed regardless of memory limits.
+Because standard `encoding/csv` allocates millions of transient heap strings, the Go runtime repeatedly halts execution to collect dead strings to stay under the memory ceiling. `go-zerocsv` remains allocation-free and runs at full speed.
+
+#### 2. Writing (Batch Exporting with Mixed Types)
+
+| Writer | Export Time | Cumulative Heap Alloc | GC Cycles Triggered | Behavior |
+| :--- | ---: | ---: | ---: | :--- |
+| **`go-zerocsv`** | **414ms** | **~4 KB** | **0** | Direct buffer formatting |
+| `encoding/csv` (with `strconv`/`Format`) | 604ms | 153 MB | 43 | GC overhead from conversions |
+
+`go-zerocsv.Writer` formats typed primitives (`int`, `float`, `time.Time`, `bool`) directly into its internal scratch buffer via value-typed `Column`s, avoiding the heap allocations required by manual `strconv` and `time.Format` calls.
 
 ## Documentation
 
