@@ -1,6 +1,6 @@
 # go-zerocsv
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/fikrimohammad/go-zerocsv.svg)](https://pkg.go.dev/github.com/fikrimohammad/go-zerocsv)
+[![Go Reference](https://pkg.go.dev/badge/github.com/fikrimohammad/go-zerocsv/v2.svg)](https://pkg.go.dev/github.com/fikrimohammad/go-zerocsv/v2)
 [![CI](https://github.com/fikrimohammad/go-zerocsv/actions/workflows/ci.yml/badge.svg)](https://github.com/fikrimohammad/go-zerocsv/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/fikrimohammad/go-zerocsv.svg)](LICENSE)
 
@@ -26,7 +26,7 @@ conformance-fuzzed against `encoding/csv`.
 Requires Go 1.18 or higher (for `any` and native fuzzing).
 
 ```bash
-go get github.com/fikrimohammad/go-zerocsv
+go get github.com/fikrimohammad/go-zerocsv/v2
 ```
 
 ## Quick Start
@@ -40,7 +40,7 @@ import (
 	"bytes"
 	"fmt"
 
-	zerocsv "github.com/fikrimohammad/go-zerocsv"
+	zerocsv "github.com/fikrimohammad/go-zerocsv/v2"
 )
 
 func main() {
@@ -70,7 +70,7 @@ import (
 	"log"
 	"strings"
 
-	zerocsv "github.com/fikrimohammad/go-zerocsv"
+	zerocsv "github.com/fikrimohammad/go-zerocsv/v2"
 )
 
 func main() {
@@ -316,7 +316,7 @@ Because standard `encoding/csv` allocates millions of transient heap strings, th
 ## Documentation
 
 Full API documentation and runnable examples are available on
-[pkg.go.dev](https://pkg.go.dev/github.com/fikrimohammad/go-zerocsv).
+[pkg.go.dev](https://pkg.go.dev/github.com/fikrimohammad/go-zerocsv/v2).
 
 ## Concurrency
 

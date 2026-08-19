@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	zerocsv "github.com/fikrimohammad/go-zerocsv"
+	zerocsv "github.com/fikrimohammad/go-zerocsv/v2"
 )
 
 var benchNames = []string{"alpha", "beta", "gamma", "delta", "epsilon"}

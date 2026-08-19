@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	zerocsv "github.com/fikrimohammad/go-zerocsv"
+	zerocsv "github.com/fikrimohammad/go-zerocsv/v2"
 )
 
 // BenchmarkWriteScale compares zerocsv against encoding/csv at fixed row counts,

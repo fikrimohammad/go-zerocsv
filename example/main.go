@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	zerocsv "github.com/fikrimohammad/go-zerocsv"
+	zerocsv "github.com/fikrimohammad/go-zerocsv/v2"
 )
 
 // Date demonstrates a custom domain type implementing both FieldScanner and FieldValuer
