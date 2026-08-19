@@ -333,6 +333,10 @@ go-zerocsv intentionally makes trade-offs to achieve zero allocations:
 - **Non-resumable parse errors**: Once a fatal parse error occurs, `Read` and `ReadAll`
   continue returning it. (Field-count mismatches are non-fatal, matching `encoding/csv`).
 
+## Roadmap
+
+- [ ] **Multi-byte & string delimiter support**: Support for Unicode runes (`'§'`, `'·'`) and multi-character string delimiters (`"||"`, `"~|~"`) while retaining zero-allocation streaming.
+
 ## Contributing
 
 1. Fork the repository.
