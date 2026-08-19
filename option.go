@@ -1,10 +1,6 @@
 package zerocsv
 
-import (
-	"bytes"
-	"errors"
-	"unicode/utf8"
-)
+import "errors"
 
 // ErrInvalidDelim is returned when a delimiter that would corrupt the CSV
 // structure is configured on a Writer or Reader.
@@ -16,7 +12,7 @@ type Option func(*options)
 // options holds configuration shared by the Writer and Reader. Fields that
 // only apply to one of the two are simply ignored by the other.
 type options struct {
-	delimiter       []byte
+	delimiter       byte
 	useCRLF         bool
 	lazyQuotes      bool
 	fieldsPerRecord int
@@ -24,38 +20,15 @@ type options struct {
 }
 
 func defaultOptions() *options {
-	return &options{delimiter: []byte{','}}
+	return &options{delimiter: ','}
 }
 
-// WithDelimiter sets a single-byte field delimiter, for example ',' for CSV,
-// '\t' for TSV, or ';' for semicolon-separated values.
-// The NUL byte, '"', '\r', and '\n' are rejected.
+// WithDelimiter sets the field delimiter, for example ',' for CSV, '\t' for
+// TSV, or ';' for semicolon-separated values. Only single ASCII bytes are
+// supported. The NUL byte, '"', '\r', '\n' and any byte above '\x7f' are
+// rejected: an invalid delimiter marks a Writer or Reader as failed, and Read,
+// ReadAll, Write, WriteAll, Flush and Error report the error.
 func WithDelimiter(d byte) Option {
-	return func(o *options) {
-		o.delimiter = []byte{d}
-	}
-}
-
-// WithDelimiterRune sets the field delimiter to a single Unicode rune, supporting
-// ASCII and multi-byte UTF-8 runes (such as '§', '·', '€', '▲').
-// The NUL rune, '"', '\r', '\n', and invalid runes are rejected.
-func WithDelimiterRune(r rune) Option {
-	var buf [utf8.UTFMax]byte
-	n := utf8.EncodeRune(buf[:], r)
-	return WithDelimiterBytes(buf[:n])
-}
-
-// WithDelimiterString sets the field delimiter to a string, supporting single-character
-// and multi-character string delimiters (such as "||", "~|~", "###").
-// Delimiters containing NUL, '"', '\r', or '\n' are rejected.
-func WithDelimiterString(s string) Option {
-	return WithDelimiterBytes([]byte(s))
-}
-
-// WithDelimiterBytes sets the field delimiter to a raw byte slice.
-// Delimiters containing NUL, '"', '\r', or '\n' are rejected.
-func WithDelimiterBytes(b []byte) Option {
-	d := append([]byte(nil), b...)
 	return func(o *options) {
 		o.delimiter = d
 	}
@@ -106,16 +79,10 @@ func WithMaxBuffer(n int) Option {
 	}
 }
 
-// validDelim reports whether d is a usable delimiter.
-func validDelim(d []byte) bool {
-	if len(d) == 0 {
-		return false
-	}
-	if bytes.ContainsAny(d, "\x00\"\r\n") {
-		return false
-	}
-	if !utf8.Valid(d) {
-		return false
-	}
-	return true
+// validDelim reports whether c is a usable delimiter. Delimiters above '\x7f'
+// are rejected: the parser scans single bytes, so a multi-byte UTF-8 delimiter
+// could never match, and a raw non-ASCII byte would silently corrupt the
+// parsing of any multibyte text.
+func validDelim(c byte) bool {
+	return c != 0 && c != '"' && c != '\r' && c != '\n' && c <= 0x7f
 }

@@ -196,39 +196,3 @@ func BenchmarkReadStdlibReuseRecord(b *testing.B) {
 		}
 	}
 }
-
-var benchCSVMultiByte = strings.ReplaceAll(benchCSV, ",", "||")
-
-func BenchmarkReadMultiByteString(b *testing.B) {
-	r := zerocsv.NewReader(strings.NewReader(benchCSVMultiByte), zerocsv.WithDelimiterString("||"))
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		rec, err := r.Read()
-		if err == io.EOF {
-			r = zerocsv.NewReader(strings.NewReader(benchCSVMultiByte), zerocsv.WithDelimiterString("||"))
-			rec, err = r.Read()
-		}
-		if err != nil {
-			b.Fatal(err)
-		}
-		_ = rec.Len()
-	}
-}
-
-func BenchmarkWriteMultiByteString(b *testing.B) {
-	w := zerocsv.NewWriter(io.Discard, zerocsv.WithDelimiterString("||"))
-	cols := make([]zerocsv.Column, 5)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		cols[0] = zerocsv.ColumnString(benchNames[i%len(benchNames)])
-		cols[1] = zerocsv.ColumnInt(i)
-		cols[2] = zerocsv.ColumnInt64(int64(i) * 1000)
-		cols[3] = zerocsv.ColumnFloat64(float64(i) * 0.5)
-		cols[4] = zerocsv.ColumnBool(i%2 == 0)
-		if err := w.Write(cols...); err != nil {
-			b.Fatal(err)
-		}
-	}
-}

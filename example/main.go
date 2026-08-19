@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -37,7 +36,6 @@ func main() {
 	timeColumn()
 	customValuerWrite()
 	customDelimiter()
-	multiByteDelimiter()
 	crlf()
 	zeroAllocation()
 	readBasic()
@@ -107,33 +105,6 @@ func customDelimiter() {
 
 	_ = w.Write(zerocsv.ColumnString("a"), zerocsv.ColumnInt(1))
 	_ = w.Flush()
-}
-
-func multiByteDelimiter() {
-	fmt.Println("--- multi-byte delimiter (rune & string) ---")
-	var buf bytes.Buffer
-
-	// Write with multi-character delimiter "||"
-	w := zerocsv.NewWriter(&buf, zerocsv.WithDelimiterString("||"))
-	_ = w.Write(zerocsv.ColumnInt(1), zerocsv.ColumnString("Alice"), zerocsv.ColumnFloat64(98.5))
-	_ = w.Write(zerocsv.ColumnInt(2), zerocsv.ColumnString("Bob||Smith"), zerocsv.ColumnFloat64(87.0))
-	_ = w.Flush()
-
-	// Read back with zero allocations
-	r := zerocsv.NewReader(&buf, zerocsv.WithDelimiterString("||"))
-	var (
-		id    int
-		name  string
-		score float64
-	)
-	for {
-		rec, err := r.Read()
-		if err == io.EOF {
-			break
-		}
-		_ = rec.Scan(&id, &name, &score)
-		fmt.Printf("id=%d, name=%q, score=%.1f\n", id, name, score)
-	}
 }
 
 func crlf() {

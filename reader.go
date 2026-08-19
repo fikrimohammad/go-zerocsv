@@ -1,7 +1,6 @@
 package zerocsv
 
 import (
-	"bytes"
 	"errors"
 	"io"
 )
@@ -14,10 +13,7 @@ import (
 // records into a slice of owned Records.
 type Reader struct {
 	r          io.Reader
-	delimBuf   [8]byte
-	delim      []byte
-	delimByte  byte
-	isSingle   bool
+	delimiter  byte
 	lazyQuotes bool
 
 	fieldsPerRecord int // expected fields per record; see WithFieldsPerRecord
@@ -63,19 +59,10 @@ func NewReader(r io.Reader, opts ...Option) *Reader {
 	}
 	rd := &Reader{
 		r:               r,
+		delimiter:       o.delimiter,
 		lazyQuotes:      o.lazyQuotes,
 		fieldsPerRecord: o.fieldsPerRecord,
 		maxBuf:          o.maxBuf,
-	}
-	if len(o.delimiter) <= len(rd.delimBuf) {
-		copy(rd.delimBuf[:], o.delimiter)
-		rd.delim = rd.delimBuf[:len(o.delimiter)]
-	} else {
-		rd.delim = append([]byte(nil), o.delimiter...)
-	}
-	if len(rd.delim) == 1 {
-		rd.isSingle = true
-		rd.delimByte = rd.delim[0]
 	}
 	if !validDelim(o.delimiter) {
 		rd.err = ErrInvalidDelim
@@ -231,12 +218,11 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 			}
 			// Decide what this quote does by peeking at the next byte.
 			if pos+1 < r.end {
-				nextByte := r.buf[pos+1]
-				switch nextByte {
+				switch r.buf[pos+1] {
 				case '"':
 					pos += 2 // escaped quote
 					continue
-				case '\n':
+				case r.delimiter, '\n':
 					inQuotes = false // closing quote
 					closedAt = pos
 					pos++
@@ -265,30 +251,6 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 					}
 					return 0, 0, false, nil // need more data
 				default:
-					if r.isSingle {
-						if nextByte == r.delimByte {
-							inQuotes = false
-							closedAt = pos
-							pos++
-							continue
-						}
-					} else {
-						rem := r.end - (pos + 1)
-						if rem >= len(r.delim) {
-							if bytes.Equal(r.buf[pos+1:pos+1+len(r.delim)], r.delim) {
-								inQuotes = false
-								closedAt = pos
-								pos++
-								continue
-							}
-						} else {
-							if bytes.Equal(r.buf[pos+1:r.end], r.delim[:rem]) {
-								if !r.eof {
-									return 0, 0, false, nil // need more data
-								}
-							}
-						}
-					}
 					if r.lazyQuotes {
 						pos++ // literal quote, field stays quoted
 						continue
@@ -319,6 +281,11 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 				continue
 			}
 			return 0, 0, false, ErrBareQuote
+		case r.delimiter:
+			r.recordSpan(fieldStart, pos, closedAt == pos-1)
+			pos++
+			fieldStart = pos
+			closedAt = -1
 		case '\n':
 			return r.recordField(pos, 1, fieldStart, pos, closedAt == pos-1)
 		case '\r':
@@ -336,32 +303,6 @@ func (r *Reader) scan() (recEnd, nlLen int, complete bool, err error) {
 			}
 			return 0, 0, false, nil // need more data
 		default:
-			if r.isSingle {
-				if c == r.delimByte {
-					r.recordSpan(fieldStart, pos, closedAt == pos-1)
-					pos++
-					fieldStart = pos
-					closedAt = -1
-					continue
-				}
-			} else {
-				rem := r.end - pos
-				if rem >= len(r.delim) {
-					if bytes.Equal(r.buf[pos:pos+len(r.delim)], r.delim) {
-						r.recordSpan(fieldStart, pos, closedAt == pos-1)
-						pos += len(r.delim)
-						fieldStart = pos
-						closedAt = -1
-						continue
-					}
-				} else {
-					if bytes.Equal(r.buf[pos:r.end], r.delim[:rem]) {
-						if !r.eof {
-							return 0, 0, false, nil // need more data
-						}
-					}
-				}
-			}
 			pos++
 		}
 	}
