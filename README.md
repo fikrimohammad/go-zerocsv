@@ -18,6 +18,7 @@ conformance-fuzzed against `encoding/csv`.
 - **Typed scanning**: `Record.Scan(&id, &name, &score)` parses fields directly from byte slices without string allocations.
 - **Custom types (`Scanner` & `Valuer`)**: Implement `FieldScanner` and `FieldValuer` for zero-allocation domain parsing/formatting.
 - **Value-typed columns**: Compact 48-byte `Column` struct passes fields by value without interface boxing.
+- **Delimiter flexibility**: Supports single-byte ASCII (`,`, `\t`), multi-byte UTF-8 runes (`'§'`, `'·'`, `'▲'`), and multi-character strings (`"||"`, `"~|~"`) with zero allocations.
 - **Fuzz-tested parity**: Conformance-fuzzed against `encoding/csv` (strict, lazy-quotes, and field counts). Zero dependencies.
 
 ## Installation
@@ -124,8 +125,10 @@ Options are shared by the writer and reader; each applies only to the side it
 concerns.
 
 ```go
-// Tab-separated values.
+// Delimiters: single-byte, multi-byte Unicode rune, or multi-character string
 w := zerocsv.NewWriter(&buf, zerocsv.WithDelimiter('\t'))
+w := zerocsv.NewWriter(&buf, zerocsv.WithDelimiterRune('§'))
+w := zerocsv.NewWriter(&buf, zerocsv.WithDelimiterString("||"))
 
 // CRLF line endings instead of LF.
 w := zerocsv.NewWriter(&buf, zerocsv.WithCRLF())
@@ -265,7 +268,8 @@ conversions — 272 MB of cumulative allocation for 5M rows.
 
 | Benchmark | ns/op | B/op | allocs/op |
 | --------- | ----: | ---: | --------: |
-| zerocsv `Read` | 50.9 | 19 | 0 |
+| zerocsv `Read` (single-byte) | 50.9 | 19 | 0 |
+| zerocsv `Read` (multi-character `\|\|`) | 110.2 | 20 | 0 |
 | `encoding/csv` `Read` | 115.2 | 114 | 2 |
 | `encoding/csv` `Read` (`ReuseRecord = true`) | 84.6 | 35 | 1 |
 
@@ -277,12 +281,13 @@ conversions — 272 MB of cumulative allocation for 5M rows.
 | `encoding/csv` `Write` (strings) | 58.2 | 0 | 0 |
 | zerocsv `Write` (mixed types) | 95.7 | 0 | 0 |
 | `encoding/csv` `Write` (mixed types) | 142.5 | 31 | 2 |
+| zerocsv `Write` (multi-character `\|\|`) | 115.1 | 0 | 0 |
 | zerocsv `Write` (with time) | 142.4 | 0 | 0 |
 | `encoding/csv` `Write` (with time) | 200.5 | 54 | 3 |
 
 For pre-formatted strings both writers are allocation-free and comparable.
 When values need formatting, zerocsv formats into its own scratch buffer
-without allocating, so the mixed and time cases stay at 0 B/op and 0 allocs/op
+without allocating, so the mixed, time, and multi-byte cases stay at 0 B/op and 0 allocs/op
 while `encoding/csv` allocates for every `strconv`/`Format` call.
 
 ### Real-World Impact: GC Pressure & Memory Limits (`GOMEMLIMIT`)
@@ -326,8 +331,6 @@ go-zerocsv intentionally makes trade-offs to achieve zero allocations:
   directly into the reader's internal buffer. Data must be consumed (via `Scan()`,
   `Bytes()`, or `String()`) before the next call to `Read()`. Use `ReadAll()` if you
   need records that safely own their storage.
-- **Single-byte delimiters**: The delimiter is a single byte (e.g. `,`, `\t`, `|`);
-  multi-rune delimiters are not supported.
 - **No comments or whitespace trimming**: Comment lines (`#`) are not recognized, and
   leading whitespace is not automatically stripped.
 - **Non-resumable parse errors**: Once a fatal parse error occurs, `Read` and `ReadAll`

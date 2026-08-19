@@ -959,3 +959,186 @@ func FuzzReaderConformanceFieldCount(f *testing.F) {
 		}
 	})
 }
+
+func TestReaderMultiByteRune(t *testing.T) {
+	input := "id§name§price\n1§Widget§9.99\n2§\"Special§Item\"§19.50\n"
+	r := NewReader(strings.NewReader(input), WithDelimiterRune('§'))
+
+	var (
+		id    int
+		name  string
+		price float64
+	)
+
+	// Header
+	rec, err := r.Read()
+	if err != nil {
+		t.Fatalf("Read header: %v", err)
+	}
+	if want := []string{"id", "name", "price"}; !reflect.DeepEqual(rec.Strings(), want) {
+		t.Fatalf("got header %v, want %v", rec.Strings(), want)
+	}
+
+	// Row 1
+	rec, err = r.Read()
+	if err != nil {
+		t.Fatalf("Read row 1: %v", err)
+	}
+	if err := rec.Scan(&id, &name, &price); err != nil {
+		t.Fatalf("Scan row 1: %v", err)
+	}
+	if id != 1 || name != "Widget" || price != 9.99 {
+		t.Fatalf("row 1: got id=%d name=%q price=%f", id, name, price)
+	}
+
+	// Row 2
+	rec, err = r.Read()
+	if err != nil {
+		t.Fatalf("Read row 2: %v", err)
+	}
+	if err := rec.Scan(&id, &name, &price); err != nil {
+		t.Fatalf("Scan row 2: %v", err)
+	}
+	if id != 2 || name != "Special§Item" || price != 19.50 {
+		t.Fatalf("row 2: got id=%d name=%q price=%f", id, name, price)
+	}
+}
+
+func TestReaderMultiCharString(t *testing.T) {
+	input := "id||name||active\n101||Alice||true\n102||\"Bob||Smith\"||false\n"
+	r := NewReader(strings.NewReader(input), WithDelimiterString("||"))
+
+	var (
+		id     int
+		name   string
+		active bool
+	)
+
+	// Header
+	rec, err := r.Read()
+	if err != nil {
+		t.Fatalf("Read header: %v", err)
+	}
+	if want := []string{"id", "name", "active"}; !reflect.DeepEqual(rec.Strings(), want) {
+		t.Fatalf("got header %v, want %v", rec.Strings(), want)
+	}
+
+	// Row 1
+	rec, err = r.Read()
+	if err != nil {
+		t.Fatalf("Read row 1: %v", err)
+	}
+	if err := rec.Scan(&id, &name, &active); err != nil {
+		t.Fatalf("Scan row 1: %v", err)
+	}
+	if id != 101 || name != "Alice" || !active {
+		t.Fatalf("row 1: got id=%d name=%q active=%t", id, name, active)
+	}
+
+	// Row 2
+	rec, err = r.Read()
+	if err != nil {
+		t.Fatalf("Read row 2: %v", err)
+	}
+	if err := rec.Scan(&id, &name, &active); err != nil {
+		t.Fatalf("Scan row 2: %v", err)
+	}
+	if id != 102 || name != "Bob||Smith" || active {
+		t.Fatalf("row 2: got id=%d name=%q active=%t", id, name, active)
+	}
+}
+
+func TestReaderMultiByteChunkSplit(t *testing.T) {
+	// Tests reading when buffer chunks split multi-byte delimiter across I/O reads
+	input := "a~|~b~|~c\n1~|~2~|~3\n"
+	// Use an io.Reader that returns 1-3 bytes per Read to force splits across delimiter
+	r := NewReader(&slowByteReader{data: []byte(input), chunkSize: 2}, WithDelimiterString("~|~"))
+	rows, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	if want := []string{"a", "b", "c"}; !reflect.DeepEqual(rows[0].Strings(), want) {
+		t.Fatalf("row 0: got %v, want %v", rows[0].Strings(), want)
+	}
+	if want := []string{"1", "2", "3"}; !reflect.DeepEqual(rows[1].Strings(), want) {
+		t.Fatalf("row 1: got %v, want %v", rows[1].Strings(), want)
+	}
+}
+
+type slowByteReader struct {
+	data      []byte
+	chunkSize int
+}
+
+func (s *slowByteReader) Read(p []byte) (n int, err error) {
+	if len(s.data) == 0 {
+		return 0, io.EOF
+	}
+	toRead := s.chunkSize
+	if toRead > len(s.data) {
+		toRead = len(s.data)
+	}
+	if toRead > len(p) {
+		toRead = len(p)
+	}
+	copy(p, s.data[:toRead])
+	s.data = s.data[toRead:]
+	return toRead, nil
+}
+
+func FuzzReaderMultiByteRuneConformance(f *testing.F) {
+	seeds := []string{
+		"a§b§c\n1§2§3\n",
+		"\"a§b\"§c\n",
+		"\"unclosed\n",
+		"a§§c\n",
+		"a§b\r\n1§2\r\n",
+	}
+	for _, s := range seeds {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		stdReader := csv.NewReader(bytes.NewReader(data))
+		stdReader.Comma = '§'
+		stdReader.FieldsPerRecord = -1
+
+		var stdRows [][]string
+		var stdErr error
+		for {
+			row, err := stdReader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				stdErr = err
+				break
+			}
+			stdRows = append(stdRows, row)
+		}
+
+		zeroReader := NewReader(bytes.NewReader(data), WithDelimiterRune('§'), WithFieldsPerRecord(-1))
+		var zeroRows [][]string
+		var zeroErr error
+		for {
+			rec, err := zeroReader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				zeroErr = err
+				break
+			}
+			zeroRows = append(zeroRows, rec.Strings())
+		}
+
+		if (stdErr == nil) != (zeroErr == nil) {
+			t.Fatalf("error parity mismatch: stdErr=%v, zeroErr=%v, input=%q", stdErr, zeroErr, data)
+		}
+		if stdErr == nil && !reflect.DeepEqual(stdRows, zeroRows) {
+			t.Fatalf("row mismatch:\nstd=%q\ngot=%q", stdRows, zeroRows)
+		}
+	})
+}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"strconv"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -39,7 +40,10 @@ const bufioDefaultSize = 4096
 type Writer struct {
 	w               *bufio.Writer
 	err             error
-	comma           byte
+	delimBuf        [8]byte
+	delim           []byte
+	delimByte       byte
+	isSingle        bool
 	useCRLF         bool
 	fieldsPerRecord int // expected fields per record; see WithFieldsPerRecord
 	scratch         []byte
@@ -54,10 +58,19 @@ func NewWriter(w io.Writer, opts ...Option) *Writer {
 		opt(o)
 	}
 	wr := &Writer{
-		comma:           o.delimiter,
 		useCRLF:         o.useCRLF,
 		fieldsPerRecord: o.fieldsPerRecord,
 		scratch:         make([]byte, 0, initialScratchSize),
+	}
+	if len(o.delimiter) <= len(wr.delimBuf) {
+		copy(wr.delimBuf[:], o.delimiter)
+		wr.delim = wr.delimBuf[:len(o.delimiter)]
+	} else {
+		wr.delim = append([]byte(nil), o.delimiter...)
+	}
+	if len(wr.delim) == 1 {
+		wr.isSingle = true
+		wr.delimByte = wr.delim[0]
 	}
 	if bw, ok := w.(*bufio.Writer); ok && bw.Size() >= bufioDefaultSize {
 		wr.w = bw
@@ -88,7 +101,11 @@ func (w *Writer) Write(cols ...Column) error {
 	countErr := w.checkFieldCount(len(cols))
 	for i := range cols {
 		if i > 0 {
-			w.writeByte(w.comma)
+			if w.isSingle {
+				w.writeByte(w.delimByte)
+			} else {
+				w.writeBytes(w.delim)
+			}
 		}
 		w.writeColumn(&cols[i])
 	}
@@ -193,7 +210,7 @@ func (w *Writer) writeField(field string) {
 	if w.err != nil {
 		return
 	}
-	if !fieldNeedsQuotes(field, w.comma) {
+	if !w.fieldNeedsQuotes(field) {
 		w.writeString(field)
 		return
 	}
@@ -208,21 +225,41 @@ func (w *Writer) writeField(field string) {
 	w.writeByte('"')
 }
 
-func fieldNeedsQuotes(field string, comma byte) bool {
+func (w *Writer) fieldNeedsQuotes(field string) bool {
+	return fieldNeedsQuotesBytes(field, w.delim, w.delimByte, w.isSingle)
+}
+
+func fieldNeedsQuotesBytes(field string, delim []byte, delimByte byte, isSingle bool) bool {
 	if field == "" {
 		return false
 	}
 	if field == `\.` {
 		return true
 	}
-	for i := 0; i < len(field); i++ {
-		switch field[i] {
-		case comma, '"', '\r', '\n':
+	if isSingle {
+		for i := 0; i < len(field); i++ {
+			switch field[i] {
+			case delimByte, '"', '\r', '\n':
+				return true
+			}
+		}
+	} else {
+		if strings.Contains(field, bytesToString(delim)) {
 			return true
+		}
+		for i := 0; i < len(field); i++ {
+			switch field[i] {
+			case '"', '\r', '\n':
+				return true
+			}
 		}
 	}
 	r, _ := utf8.DecodeRuneInString(field)
 	return unicode.IsSpace(r)
+}
+
+func fieldNeedsQuotes(field string, comma byte) bool {
+	return fieldNeedsQuotesBytes(field, []byte{comma}, comma, true)
 }
 
 func (w *Writer) writeString(s string) {
