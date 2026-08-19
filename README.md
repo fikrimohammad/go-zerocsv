@@ -4,38 +4,21 @@
 [![CI](https://github.com/fikrimohammad/go-zerocsv/actions/workflows/ci.yml/badge.svg)](https://github.com/fikrimohammad/go-zerocsv/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/fikrimohammad/go-zerocsv.svg)](LICENSE)
 
-**CSV I/O that doesn't make you pay.** go-zerocsv reads CSV more than twice as
-fast as `encoding/csv` and writes with zero heap allocations per record. It
-reuses a single small buffer, so a 5M-row file costs the same few kilobytes as
-a 100-row one — while the standard library burns 540 MB and 10 million
-allocations on the read alone. Same parsing semantics, conformance-fuzzed
-against `encoding/csv`.
+**Zero-allocation, flat-memory CSV I/O for Go.** go-zerocsv reads CSV faster
+than `encoding/csv` and writes with zero heap allocations per record. It reuses
+a single compacting buffer, so a 5M-row file maintains a constant ~5 KB memory
+footprint—compared to ~540 MB and 10 million heap allocations with standard
+`encoding/csv` (and 140 MB with `ReuseRecord = true`). Same parsing semantics,
+conformance-fuzzed against `encoding/csv`.
 
 ## Features
 
-- **Zero allocations on the hot path**: each `Write` and lazy `Read` parses
-  without heap allocation; the buffer and field slices are allocated once and
-  reused.
-- **Symmetric Scanner & Valuer interfaces**: custom types can implement
-  `FieldScanner` (`ScanCSV([]byte) error`) and `FieldValuer` (`AppendCSV([]byte) ([]byte, error)`)
-  for zero-allocation custom parsing and formatting with no reflection or interface boxing.
-- **`database/sql`-style typed scanning**: `Record.Scan(&id, &name, &score)`
-  parses numeric, boolean, string, and custom fields in-place with zero allocations and
-  protects against scratch buffer mutation.
-- **Ultra-compact 48-byte `Column` value struct**: passes by value with minimal
-  stack and slice memory overhead.
-- **Eager & Lazy reading APIs**: use lazy `Read()` for streaming with flat memory
-  or `ReadAll()` to eagerly load all records into safe, owned storage.
-- **Field-count validation**: like `encoding/csv`, records are checked to have
-  a consistent number of fields (auto-detected from the first record) on both
-  read and write, unless disabled with `WithFieldsPerRecord(-1)`.
-- **Zero dependencies**: relies exclusively on the Go standard library.
-- **Fuzz-tested parity**: reader output is conformance-fuzzed against
-  `encoding/csv` in strict, lazy-quote, and field-count modes.
-- **Flat memory**: the reader holds one reusable buffer regardless of input
-  size, so a 5M-row file costs roughly as much memory as a 100-row one. The
-  buffer grows only to fit the largest single record, shrinks back afterward,
-  and can be capped with `WithMaxBuffer`.
+- **Zero-allocation hot paths**: `Write()` and lazy `Read()` parse without heap allocations via buffer reuse.
+- **Flat-memory streaming**: Reusable compacting buffer maintains a ~5 KB footprint regardless of input size.
+- **Typed scanning**: `Record.Scan(&id, &name, &score)` parses fields directly from byte slices without string allocations.
+- **Custom types (`Scanner` & `Valuer`)**: Implement `FieldScanner` and `FieldValuer` for zero-allocation domain parsing/formatting.
+- **Value-typed columns**: Compact 48-byte `Column` struct passes fields by value without interface boxing.
+- **Fuzz-tested parity**: Conformance-fuzzed against `encoding/csv` (strict, lazy-quotes, and field counts). Zero dependencies.
 
 ## Installation
 
@@ -159,7 +142,7 @@ r := zerocsv.NewReader(f, zerocsv.WithFieldsPerRecord(-1)) // variable widths
 r := zerocsv.NewReader(f, zerocsv.WithMaxBuffer(1 << 20))
 
 // The auto-detected count is observable on both reader and writer:
-w := zerocsv.NewWriter(buf)
+w := zerocsv.NewWriter(&buf)
 fmt.Println(w.FieldsPerRecord()) // 0 until the first record is written
 ```
 
@@ -241,16 +224,18 @@ accumulate into hundreds of megabytes.
 Each iteration parses all `n` rows with a fresh reader; `MB/s` is throughput
 and `B/op` is the cumulative allocation for the whole pass.
 
-| Rows | zerocsv ns/op | zerocsv MB/s | zerocsv B/op | zerocsv allocs | stdlib ns/op | stdlib MB/s | stdlib B/op | stdlib allocs |
-| ---- | ------------: | -----------: | -----------: | --------------: | -----------: | ----------: | ----------: | -------------: |
-| 100K | 6.37ms | 451.6 | 5.0 KB | 12 | 10.50ms | 273.8 | 10.8 MB | 200,013 |
-| 500K | 30.8ms | 465.6 | 5.0 KB | 12 | 50.16ms | 286.5 | 54.0 MB | 1,000,013 |
-| 1M | 62.2ms | 461.9 | 5.0 KB | 12 | 100.6ms | 285.8 | 108 MB | 2,000,014 |
-| 5M | 302.8ms | 474.7 | 5.0 KB | 12 | 492.3ms | 292.0 | 540 MB | 10,000,014 |
+| Rows | zerocsv ns/op | zerocsv MB/s | zerocsv B/op | zerocsv allocs | stdlib (default) ns/op | stdlib B/op | stdlib allocs | stdlib (ReuseRecord) ns/op | stdlib (ReuseRecord) B/op | stdlib (ReuseRecord) allocs |
+| ---- | ------------: | -----------: | -----------: | --------------: | ---------------------: | ----------: | -------------: | --------------------------: | -------------------------: | ----------------------------: |
+| 100K | 6.45ms | 445.5 | 5.0 KB | 12 | 11.33ms | 10.8 MB | 200,013 | 8.75ms | 2.8 MB | 100,014 |
+| 500K | 32.6ms | 440.4 | 5.0 KB | 12 | 54.54ms | 54.0 MB | 1,000,013 | 43.29ms | 14.0 MB | 500,014 |
+| 1M | 66.6ms | 431.5 | 5.0 KB | 12 | 109.2ms | 108 MB | 2,000,013 | 82.20ms | 28.0 MB | 1,000,014 |
+| 5M | 334.7ms | 429.5 | 5.0 KB | 12 | 530.4ms | 540 MB | 10,000,013 | 415.9ms | 140 MB | 5,000,014 |
 
 zerocsv allocates a constant ~5.0 KB and 12 objects no matter how many rows
 are read: it reuses one small buffer that is compacted between records, so its
-`B/op` stays flat while `encoding/csv`'s grows linearly to 540 MB at 5M rows.
+`B/op` stays flat while `encoding/csv`'s grows linearly to 540 MB at 5M rows
+(even with `ReuseRecord = true`, which reuses the outer slice header but still
+allocates 140 MB across 5 million field strings).
 A record larger than the buffer grows it on demand to fit that single record,
 and the buffer is trimmed back to ~4 KB once the record has been consumed, so
 memory never stays pinned at the peak record size. Buffers up to 256 KB are
@@ -280,8 +265,9 @@ conversions — 272 MB of cumulative allocation for 5M rows.
 
 | Benchmark | ns/op | B/op | allocs/op |
 | --------- | ----: | ---: | --------: |
-| zerocsv `Read` | 50.4 | 19 | 0 |
-| `encoding/csv` `Read` | 115.3 | 114 | 2 |
+| zerocsv `Read` | 50.9 | 19 | 0 |
+| `encoding/csv` `Read` | 115.2 | 114 | 2 |
+| `encoding/csv` `Read` (`ReuseRecord = true`) | 84.6 | 35 | 1 |
 
 ### Writing — per record
 
@@ -309,15 +295,20 @@ Full API documentation and runnable examples are available on
 `Writer` and `Reader` are stateful and not safe for concurrent use. Use a
 separate instance per goroutine.
 
-## Limitations
+## Limitations & Memory Model
 
-go-zerocsv intentionally does not implement every `encoding/csv` feature:
+go-zerocsv intentionally makes trade-offs to achieve zero allocations:
 
-- The delimiter is a single byte; multi-rune delimiters are not supported.
-- Comment lines are not recognized, and leading whitespace is never trimmed.
-- The parser cannot resume after a malformed record: once a parse error
-  occurs, `Read` and `ReadAll` keep returning it. (Field-count mismatches are the exception
-  and are non-fatal, matching `encoding/csv`.)
+- **Buffer aliasing on lazy `Read()`**: Field byte slices in a lazy `Record` point
+  directly into the reader's internal buffer. Data must be consumed (via `Scan()`,
+  `Bytes()`, or `String()`) before the next call to `Read()`. Use `ReadAll()` if you
+  need records that safely own their storage.
+- **Single-byte delimiters**: The delimiter is a single byte (e.g. `,`, `\t`, `|`);
+  multi-rune delimiters are not supported.
+- **No comments or whitespace trimming**: Comment lines (`#`) are not recognized, and
+  leading whitespace is not automatically stripped.
+- **Non-resumable parse errors**: Once a fatal parse error occurs, `Read` and `ReadAll`
+  continue returning it. (Field-count mismatches are non-fatal, matching `encoding/csv`).
 
 ## Contributing
 

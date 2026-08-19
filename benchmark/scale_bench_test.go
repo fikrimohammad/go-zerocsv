@@ -116,6 +116,15 @@ func BenchmarkReadScale(b *testing.B) {
 				readStdlib(data)
 			}
 		})
+		b.Run(fmt.Sprintf("stdlib-reuse/%d", n), func(b *testing.B) {
+			data := buildCSV(n)
+			b.SetBytes(int64(len(data)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				readStdlibReuseRecord(data)
+			}
+		})
 	}
 }
 
@@ -140,6 +149,28 @@ func readZerocsv(data []byte) {
 func readStdlib(data []byte) {
 	r := csv.NewReader(bytes.NewReader(data))
 	r.FieldsPerRecord = -1
+	fields := 0
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			panic(err)
+		}
+		for i := range rec {
+			fields += len(rec[i])
+		}
+	}
+	if fields < 0 {
+		panic(fields)
+	}
+}
+
+func readStdlibReuseRecord(data []byte) {
+	r := csv.NewReader(bytes.NewReader(data))
+	r.FieldsPerRecord = -1
+	r.ReuseRecord = true
 	fields := 0
 	for {
 		rec, err := r.Read()
