@@ -173,3 +173,26 @@ func BenchmarkReadStdlib(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkReadStdlibReuseRecord(b *testing.B) {
+	r := csv.NewReader(strings.NewReader(benchCSV))
+	r.FieldsPerRecord = -1
+	r.ReuseRecord = true
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rec, err := r.Read()
+		if err == io.EOF {
+			r = csv.NewReader(strings.NewReader(benchCSV))
+			r.FieldsPerRecord = -1
+			r.ReuseRecord = true
+			rec, err = r.Read()
+		}
+		if err != nil {
+			b.Fatal(err)
+		}
+		for j := range rec {
+			_ = rec[j]
+		}
+	}
+}
