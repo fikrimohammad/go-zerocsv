@@ -311,8 +311,33 @@ func TestScanFieldScanner(t *testing.T) {
 
 	// Nil pointer safety
 	var nilScanner *testCustomDate
-	if err := records[0].Scan(nilScanner, &txt); err == nil {
-		t.Fatal("Scan with nil FieldScanner: want error")
+	if err := records[0].Scan(nilScanner, &txt); !errors.Is(err, ErrNilDestinationPointer) {
+		t.Fatalf("Scan with nil FieldScanner: got error %v, want ErrNilDestinationPointer", err)
+	}
+}
+
+func TestRecordScanEmptyRecordAndNilDestinations(t *testing.T) {
+	// Empty record Scan returns ErrEmptyRecord
+	var emptyRec Record
+	var s string
+	if err := emptyRec.Scan(&s); !errors.Is(err, ErrEmptyRecord) {
+		t.Fatalf("emptyRec.Scan: got %v, want ErrEmptyRecord", err)
+	}
+
+	// Nil destination argument returns ErrNilDestination
+	r := NewReader(strings.NewReader("a,b\n"))
+	rec, err := r.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if err := rec.Scan(nil, &s); !errors.Is(err, ErrNilDestination) {
+		t.Fatalf("rec.Scan(nil, ...): got %v, want ErrNilDestination", err)
+	}
+
+	// Nil typed pointer returns ErrNilDestinationPointer
+	var nilStr *string
+	if err := rec.Scan(nilStr, &s); !errors.Is(err, ErrNilDestinationPointer) {
+		t.Fatalf("rec.Scan(nilStr, ...): got %v, want ErrNilDestinationPointer", err)
 	}
 }
 

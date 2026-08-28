@@ -2,7 +2,6 @@ package zerocsv
 
 import (
 	"bufio"
-	"errors"
 	"io"
 	"math"
 	"strconv"
@@ -16,18 +15,11 @@ type FieldValuer interface {
 	AppendCSV(dst []byte) ([]byte, error)
 }
 
-// ErrEmptyRecord is returned by Write when no columns are provided.
-var ErrEmptyRecord = errors.New("zerocsv: empty record")
-
 // initialScratchSize pre-sizes the numeric/time scratch buffer. It covers the
 // longest common fields — int64/uint64 min/max (20 bytes) and RFC3339 time
 // (25 bytes) — so the first Write performs no allocation. Floats formatted
 // with 'f' can exceed this and grow the buffer lazily.
 const initialScratchSize = 32
-
-// bufioDefaultSize is bufio.NewWriter's default buffer size. A *bufio.Writer
-// at least this large is reused directly instead of being wrapped again.
-const bufioDefaultSize = 4096
 
 // Writer writes CSV records with zero allocations per write.
 //
@@ -42,12 +34,14 @@ type Writer struct {
 	comma           byte
 	useCRLF         bool
 	fieldsPerRecord int // expected fields per record; see WithFieldsPerRecord
+	maxBuf          int // record size cap; see WithMaxBufferSize
 	scratch         []byte
 }
 
 // NewWriter returns a Writer that writes CSV records to w, applying opts. If
-// w is already a *bufio.Writer with a buffer at least as large as the default
-// (4096 bytes), it is reused directly rather than being wrapped again.
+// w is already a *bufio.Writer with a buffer at least as large as the configured
+// buffer size (default 4096 bytes), it is reused directly rather than being
+// wrapped again.
 func NewWriter(w io.Writer, opts ...Option) *Writer {
 	o := defaultOptions()
 	for _, opt := range opts {
@@ -57,12 +51,20 @@ func NewWriter(w io.Writer, opts ...Option) *Writer {
 		comma:           o.delimiter,
 		useCRLF:         o.useCRLF,
 		fieldsPerRecord: o.fieldsPerRecord,
+		maxBuf:          o.maxBuf,
 		scratch:         make([]byte, 0, initialScratchSize),
 	}
-	if bw, ok := w.(*bufio.Writer); ok && bw.Size() >= bufioDefaultSize {
+	bufSize := o.bufSize
+	if bufSize <= 0 {
+		bufSize = DefaultBufferSize
+	}
+	if o.maxBuf > 0 && bufSize > o.maxBuf {
+		bufSize = o.maxBuf
+	}
+	if bw, ok := w.(*bufio.Writer); ok && bw.Size() >= bufSize && (o.maxBuf <= 0 || bw.Size() <= o.maxBuf) {
 		wr.w = bw
 	} else {
-		wr.w = bufio.NewWriter(w)
+		wr.w = bufio.NewWriterSize(w, bufSize)
 	}
 	if !validDelim(o.delimiter) {
 		wr.err = ErrInvalidDelim
@@ -85,6 +87,17 @@ func (w *Writer) Write(cols ...Column) error {
 	if len(cols) == 0 {
 		return ErrEmptyRecord
 	}
+	if w.maxBuf > 0 {
+		sz, err := w.recordSize(cols)
+		if err != nil {
+			w.err = err
+			return err
+		}
+		if sz > w.maxBuf {
+			w.err = ErrRecordTooLarge
+			return ErrRecordTooLarge
+		}
+	}
 	countErr := w.checkFieldCount(len(cols))
 	for i := range cols {
 		if i > 0 {
@@ -100,6 +113,74 @@ func (w *Writer) Write(cols ...Column) error {
 		return w.err
 	}
 	return countErr
+}
+
+func (w *Writer) recordSize(cols []Column) (int, error) {
+	total := len(cols) - 1 // delimiters
+	if w.useCRLF {
+		total += 2
+	} else {
+		total += 1
+	}
+
+	for i := range cols {
+		c := &cols[i]
+		switch c.kind {
+		case columnString, columnBytes:
+			s := c.s
+			if !fieldNeedsQuotes(s, w.comma) {
+				total += len(s)
+			} else {
+				total += 2 + len(s)
+				for j := 0; j < len(s); j++ {
+					if s[j] == '"' {
+						total++
+					}
+				}
+			}
+		case columnInt:
+			w.scratch = strconv.AppendInt(w.scratch[:0], int64(c.n), 10)
+			total += len(w.scratch)
+		case columnUint:
+			w.scratch = strconv.AppendUint(w.scratch[:0], c.n, 10)
+			total += len(w.scratch)
+		case columnFloat:
+			w.scratch = strconv.AppendFloat(w.scratch[:0], math.Float64frombits(c.n), 'f', -1, 64)
+			total += len(w.scratch)
+		case columnFloat32:
+			w.scratch = strconv.AppendFloat(w.scratch[:0], math.Float64frombits(c.n), 'f', -1, 32)
+			total += len(w.scratch)
+		case columnBool:
+			if c.n != 0 {
+				total += 4
+			} else {
+				total += 5
+			}
+		case columnValuer:
+			if c.valuer != nil {
+				b, err := c.valuer.AppendCSV(w.scratch[:0])
+				if err != nil {
+					return 0, err
+				}
+				w.scratch = b
+				s := bytesToString(w.scratch)
+				if !fieldNeedsQuotes(s, w.comma) {
+					total += len(s)
+				} else {
+					total += 2 + len(s)
+					for j := 0; j < len(s); j++ {
+						if s[j] == '"' {
+							total++
+						}
+					}
+				}
+			}
+		}
+		if total > w.maxBuf {
+			return total, nil
+		}
+	}
+	return total, nil
 }
 
 // checkFieldCount enforces the expected fields per record. A positive count
@@ -131,10 +212,11 @@ func (w *Writer) WriteAll(rows [][]Column) error {
 // Flush writes any buffered data to the underlying writer and returns the
 // first error encountered during Write, WriteAll or Flush, if any.
 func (w *Writer) Flush() error {
+	flushErr := w.w.Flush()
 	if w.err != nil {
 		return w.err
 	}
-	w.err = w.w.Flush()
+	w.err = flushErr
 	return w.err
 }
 

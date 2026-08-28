@@ -17,7 +17,8 @@ type Reader struct {
 	lazyQuotes bool
 
 	fieldsPerRecord int // expected fields per record; see WithFieldsPerRecord
-	maxBuf          int // buffer size cap; see WithMaxBuffer
+	maxBuf          int // buffer size cap; see WithMaxBufferSize
+	bufSize         int // initial buffer size; see WithBufferSize
 	recordsRead     int // records returned so far; backs IsFirst
 
 	buf   []byte // reusable input buffer
@@ -63,6 +64,11 @@ func NewReader(r io.Reader, opts ...Option) *Reader {
 		lazyQuotes:      o.lazyQuotes,
 		fieldsPerRecord: o.fieldsPerRecord,
 		maxBuf:          o.maxBuf,
+		bufSize:         o.bufSize,
+	}
+	if o.fieldsPerRecord > 0 {
+		rd.fields = make([][]byte, 0, o.fieldsPerRecord)
+		rd.fieldSpans = make([]fieldSpan, 0, o.fieldsPerRecord)
 	}
 	if !validDelim(o.delimiter) {
 		rd.err = ErrInvalidDelim
@@ -384,44 +390,19 @@ func (r *Reader) appendField(fstart, fend int, stripQuote bool) {
 	r.fields = append(r.fields, s)
 }
 
-// defaultBufSize is the initial size of the reader's reusable buffer.
-const defaultBufSize = 4096
-
-// minTrimSize is the smallest buffer the reader bothers reclaiming. A buffer
-// at or below this size is kept as-is even after a large record is consumed:
-// reclaiming it would force the next similar-sized record to grow it again,
-// churning allocations for negligible memory savings.
-const minTrimSize = 256 << 10
-
 // fill moves unprocessed bytes to the front of the buffer and reads more data.
 func (r *Reader) fill() error {
 	if r.start > 0 {
-		tail := r.end - r.start
-		if tail <= len(r.buf)/4 && len(r.buf) > minTrimSize {
-			// A record much larger than the buffer was just consumed; release
-			// the oversized buffer so memory does not stay pinned at the peak
-			// record size. The tail fits comfortably in a fresh buffer, so
-			// copy it there instead of compacting in place.
-			size := defaultBufSize
-			for size <= tail {
-				size *= 2
-			}
-			if r.maxBuf > 0 && size > r.maxBuf {
-				size = r.maxBuf
-			}
-			nb := make([]byte, size)
-			copy(nb, r.buf[r.start:r.end])
-			r.buf = nb
-			r.end = tail
-		} else {
-			n := copy(r.buf, r.buf[r.start:r.end])
-			r.end = n
-		}
+		n := copy(r.buf, r.buf[r.start:r.end])
+		r.end = n
 		r.start = 0
 	}
 	if r.end == len(r.buf) {
 		if len(r.buf) == 0 {
-			size := defaultBufSize
+			size := r.bufSize
+			if size <= 0 {
+				size = DefaultBufferSize
+			}
 			if r.maxBuf > 0 && size > r.maxBuf {
 				size = r.maxBuf
 			}
@@ -455,20 +436,3 @@ func (r *Reader) fill() error {
 	}
 	return nil
 }
-
-// ErrBareQuote is returned when a bare '"' appears in a non-quoted field.
-var ErrBareQuote = errors.New("bare \" in non-quoted field")
-
-// ErrRecordTooLarge is returned by Read when a record is larger than the
-// maximum buffer size configured with WithMaxBuffer and therefore cannot be
-// parsed in memory. Reading cannot continue past the record.
-var ErrRecordTooLarge = errors.New("zerocsv: record larger than the maximum buffer size")
-
-// ErrQuote is returned for an extraneous or missing '"' in a quoted field.
-var ErrQuote = errors.New("extraneous or missing \" in quoted-field")
-
-// ErrFieldCount is returned by Read or Write when a record's field count does
-// not match the expected number of fields (see WithFieldsPerRecord). It is
-// non-fatal, like encoding/csv: the record is still returned or written and
-// reading or writing can continue.
-var ErrFieldCount = errors.New("wrong number of fields")
