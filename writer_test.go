@@ -9,6 +9,7 @@ import (
 	"math"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"unsafe"
 )
@@ -754,4 +755,72 @@ func FuzzWriterFieldCount(f *testing.F) {
 			t.Fatalf("output mismatch: got %q, want %q", buf.String(), want)
 		}
 	})
+}
+
+func TestWriterWithBufferSize(t *testing.T) {
+	var buf bytes.Buffer
+
+	// Custom buffer size
+	w := NewWriter(&buf, WithBufferSize(64<<10))
+	if w.w.Size() != 64<<10 {
+		t.Fatalf("w.w.Size() = %d, want %d", w.w.Size(), 64<<10)
+	}
+
+	// Non-positive buffer size defaults to DefaultBufferSize (4096)
+	w2 := NewWriter(&buf, WithBufferSize(-1))
+	if w2.w.Size() != DefaultBufferSize {
+		t.Fatalf("w2.w.Size() = %d, want %d", w2.w.Size(), DefaultBufferSize)
+	}
+
+	// BufferSize capped at maxBuf if WithMaxBufferSize is configured
+	w4 := NewWriter(&buf, WithBufferSize(64<<10), WithMaxBufferSize(16<<10))
+	if w4.w.Size() != 16<<10 {
+		t.Fatalf("w4.w.Size() = %d, want %d", w4.w.Size(), 16<<10)
+	}
+
+	// Default buffer size capped at maxBuf if maxBuf is smaller than default (4096)
+	w5 := NewWriter(&buf, WithMaxBufferSize(1024))
+	if w5.w.Size() != 1024 {
+		t.Fatalf("w5.w.Size() = %d, want %d", w5.w.Size(), 1024)
+	}
+
+	// Reusing existing *bufio.Writer if size matches or exceeds
+	bw := bufio.NewWriterSize(&buf, 128<<10)
+	w3 := NewWriter(bw, WithBufferSize(64<<10))
+	if w3.w != bw {
+		t.Fatalf("expected existing *bufio.Writer to be reused directly")
+	}
+}
+
+func TestWriterMaxBufferSizeEnforcement(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf, WithMaxBufferSize(50))
+
+	// Record 1: 40 bytes (fits within 50 bytes)
+	cols1 := []Column{ColumnString(strings.Repeat("a", 38)), ColumnString("b")}
+	if err := w.Write(cols1...); err != nil {
+		t.Fatalf("Write(cols1): %v", err)
+	}
+
+	// Record 2: 60 bytes (exceeds 50 bytes) -> must fail with ErrRecordTooLarge
+	cols2 := []Column{ColumnString(strings.Repeat("x", 58)), ColumnString("y")}
+	if err := w.Write(cols2...); !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("Write(cols2) error = %v, want ErrRecordTooLarge", err)
+	}
+
+	// Sticky error behavior
+	if err := w.Error(); !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("Error() = %v, want ErrRecordTooLarge", err)
+	}
+	if err := w.Flush(); !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("Flush() = %v, want ErrRecordTooLarge", err)
+	}
+	if err := w.Write(cols1...); !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("Write after error = %v, want ErrRecordTooLarge", err)
+	}
+
+	// Output buffer should only contain record 1, uncorrupted
+	if got, want := buf.String(), strings.Repeat("a", 38)+",b\n"; got != want {
+		t.Fatalf("buffered content mismatch: got %q, want %q", got, want)
+	}
 }

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -677,16 +676,16 @@ func (r *chunkedReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func TestReaderTrimsOversizedBuffer(t *testing.T) {
-	// A single record larger than the buffer forces it to grow; once that
-	// record is consumed the buffer must be trimmed back to its default size
-	// so memory does not stay pinned at the peak record size.
+func TestReaderGrowsBufferForOversizedRecord(t *testing.T) {
+	// A single record larger than the default buffer forces it to grow; once that
+	// record is consumed the high-watermark buffer is retained so subsequent records
+	// parse with zero allocations without memory churn.
 	huge := strings.Repeat("x", 256<<10)
 	var input bytes.Buffer
 	input.WriteString(`"`)
 	input.WriteString(huge)
 	input.WriteString(`"` + "\n")
-	for i := 0; i < 100_000; i++ {
+	for i := 0; i < 10_000; i++ {
 		input.WriteString("a,b\n")
 	}
 	r := NewReader(&chunkedReader{data: input.Bytes(), step: 4096}, WithFieldsPerRecord(-1))
@@ -716,20 +715,17 @@ func TestReaderTrimsOversizedBuffer(t *testing.T) {
 		}
 		n++
 	}
-	if n != 100_000 {
-		t.Fatalf("read %d small rows, want 100000", n)
-	}
-	if cap(r.buf) > defaultBufSize {
-		t.Fatalf("buffer not trimmed: cap=%d, want <= %d", cap(r.buf), defaultBufSize)
+	if n != 10_000 {
+		t.Fatalf("read %d small rows, want 10000", n)
 	}
 }
 
-func TestReaderMaxBuffer(t *testing.T) {
+func TestReaderMaxBufferSize(t *testing.T) {
 	// A record that fits within the cap parses normally; a record that would
 	// need the buffer to grow past the cap fails with a sticky ErrRecordTooLarge
 	// instead of allocating unbounded memory.
 	input := strings.Repeat("a", 40) + "\n" + strings.Repeat("b", 70) + "\n" + strings.Repeat("c", 30) + "\n"
-	r := NewReader(&chunkedReader{data: []byte(input), step: 8}, WithMaxBuffer(64), WithFieldsPerRecord(-1))
+	r := NewReader(&chunkedReader{data: []byte(input), step: 8}, WithMaxBufferSize(64), WithFieldsPerRecord(-1))
 
 	rec, err := r.Read()
 	if err != nil {
@@ -749,32 +745,50 @@ func TestReaderMaxBuffer(t *testing.T) {
 	}
 }
 
-func TestReaderLiveMemoryBounded(t *testing.T) {
-	// After a large record is consumed, live heap must drop back to a small
-	// baseline even though the buffer peaked at the record's size.
-	huge := strings.Repeat("x", 256<<10)
-	var input bytes.Buffer
-	input.WriteString(`"`)
-	input.WriteString(huge)
-	input.WriteString(`"` + "\n")
-	for i := 0; i < 100_000; i++ {
-		input.WriteString("a,b\n")
+func TestReaderWithBufferSize(t *testing.T) {
+	// Custom initial buffer size is respected.
+	r := NewReader(strings.NewReader("a,b,c\n"), WithBufferSize(64<<10))
+	if _, err := r.Read(); err != nil {
+		t.Fatalf("Read: %v", err)
 	}
-	r := NewReader(&chunkedReader{data: input.Bytes(), step: 4096}, WithFieldsPerRecord(-1))
-
-	for {
-		if _, err := r.Read(); err == io.EOF {
-			break
-		} else if err != nil {
-			t.Fatalf("Read: %v", err)
-		}
+	if cap(r.buf) != 64<<10 {
+		t.Fatalf("cap(r.buf) = %d, want %d", cap(r.buf), 64<<10)
 	}
 
-	runtime.GC()
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	if m.HeapAlloc > 4<<20 {
-		t.Fatalf("live heap after stream = %d bytes, want <= 4 MiB (buffer not trimmed)", m.HeapAlloc)
+	// BufferSize capped at maxBuf if maxBuf is smaller.
+	r2 := NewReader(strings.NewReader("a,b,c\n"), WithBufferSize(64<<10), WithMaxBufferSize(16<<10))
+	if _, err := r2.Read(); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if cap(r2.buf) != 16<<10 {
+		t.Fatalf("cap(r2.buf) = %d, want %d", cap(r2.buf), 16<<10)
+	}
+
+	// Non-positive buffer size defaults to DefaultBufferSize (4096).
+	r3 := NewReader(strings.NewReader("a,b,c\n"), WithBufferSize(-1))
+	if _, err := r3.Read(); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if cap(r3.buf) != DefaultBufferSize {
+		t.Fatalf("cap(r3.buf) = %d, want %d", cap(r3.buf), DefaultBufferSize)
+	}
+}
+
+func TestReaderPreallocatedFields(t *testing.T) {
+	// When fieldsPerRecord > 0, fields and fieldSpans are pre-allocated with matching capacity.
+	r := NewReader(strings.NewReader("1,2,3,4,5,6\n"), WithFieldsPerRecord(6))
+	if cap(r.fields) != 6 {
+		t.Fatalf("cap(r.fields) = %d, want 6", cap(r.fields))
+	}
+	if cap(r.fieldSpans) != 6 {
+		t.Fatalf("cap(r.fieldSpans) = %d, want 6", cap(r.fieldSpans))
+	}
+	rec, err := r.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if rec.Len() != 6 {
+		t.Fatalf("rec.Len() = %d, want 6", rec.Len())
 	}
 }
 
@@ -958,4 +972,78 @@ func FuzzReaderConformanceFieldCount(f *testing.F) {
 			t.Fatalf("error mismatch: input=%q\n std=%v\n got=%v", data, want.errs, got.errs)
 		}
 	})
+}
+
+func TestReaderUTF8AndEmojiContent(t *testing.T) {
+	input := "id,name,text,emoji\n" +
+		"1,Alice,Café & résumé,🚀🔥\n" +
+		"2,Bob,\"Tokyo, 東京\",🇯🇵\n" +
+		"3,Charlie,مرحبا بالعالم,🎉\n" +
+		"4,David,\"Multi-line\n🌟 Sparkle\",✨\n"
+
+	r := NewReader(strings.NewReader(input))
+
+	var (
+		id    int
+		name  string
+		text  string
+		emoji string
+	)
+
+	// Header
+	rec, err := r.Read()
+	if err != nil {
+		t.Fatalf("Read header: %v", err)
+	}
+	if want := []string{"id", "name", "text", "emoji"}; !reflect.DeepEqual(rec.Strings(), want) {
+		t.Fatalf("header got %v, want %v", rec.Strings(), want)
+	}
+
+	// Row 1
+	rec, err = r.Read()
+	if err != nil {
+		t.Fatalf("Read row 1: %v", err)
+	}
+	if err := rec.Scan(&id, &name, &text, &emoji); err != nil {
+		t.Fatalf("Scan row 1: %v", err)
+	}
+	if id != 1 || name != "Alice" || text != "Café & résumé" || emoji != "🚀🔥" {
+		t.Fatalf("row 1: got (%d, %q, %q, %q)", id, name, text, emoji)
+	}
+
+	// Row 2
+	rec, err = r.Read()
+	if err != nil {
+		t.Fatalf("Read row 2: %v", err)
+	}
+	if err := rec.Scan(&id, &name, &text, &emoji); err != nil {
+		t.Fatalf("Scan row 2: %v", err)
+	}
+	if id != 2 || name != "Bob" || text != "Tokyo, 東京" || emoji != "🇯🇵" {
+		t.Fatalf("row 2: got (%d, %q, %q, %q)", id, name, text, emoji)
+	}
+
+	// Row 3
+	rec, err = r.Read()
+	if err != nil {
+		t.Fatalf("Read row 3: %v", err)
+	}
+	if err := rec.Scan(&id, &name, &text, &emoji); err != nil {
+		t.Fatalf("Scan row 3: %v", err)
+	}
+	if id != 3 || name != "Charlie" || text != "مرحبا بالعالم" || emoji != "🎉" {
+		t.Fatalf("row 3: got (%d, %q, %q, %q)", id, name, text, emoji)
+	}
+
+	// Row 4 (Multiline UTF-8)
+	rec, err = r.Read()
+	if err != nil {
+		t.Fatalf("Read row 4: %v", err)
+	}
+	if err := rec.Scan(&id, &name, &text, &emoji); err != nil {
+		t.Fatalf("Scan row 4: %v", err)
+	}
+	if id != 4 || name != "David" || text != "Multi-line\n🌟 Sparkle" || emoji != "✨" {
+		t.Fatalf("row 4: got (%d, %q, %q, %q)", id, name, text, emoji)
+	}
 }

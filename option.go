@@ -1,10 +1,13 @@
 package zerocsv
 
-import "errors"
+// DefaultDelimiter is the standard comma delimiter for CSV files.
+const DefaultDelimiter = ','
 
-// ErrInvalidDelim is returned when a delimiter that would corrupt the CSV
-// structure is configured on a Writer or Reader.
-var ErrInvalidDelim = errors.New("zerocsv: invalid field delimiter")
+// DefaultBufferSize is the initial capacity of the Reader's reusable buffer (4 KB).
+const DefaultBufferSize = 4096
+
+// maxDelimByte is the maximum single-byte ASCII code point allowed as a delimiter.
+const maxDelimByte = 0x7f
 
 // Option configures a Writer or Reader at construction time.
 type Option func(*options)
@@ -17,10 +20,28 @@ type options struct {
 	lazyQuotes      bool
 	fieldsPerRecord int
 	maxBuf          int
+	bufSize         int
 }
 
 func defaultOptions() *options {
-	return &options{delimiter: ','}
+	return &options{
+		delimiter: DefaultDelimiter,
+		bufSize:   DefaultBufferSize,
+	}
+}
+
+// WithBufferSize sets the initial size of the Writer or Reader's buffer in
+// bytes. A non-positive n uses DefaultBufferSize (4096 bytes). For a Reader,
+// if WithMaxBufferSize is also configured and n exceeds maxBuf, the initial
+// buffer size is capped at maxBuf.
+func WithBufferSize(n int) Option {
+	return func(o *options) {
+		if n > 0 {
+			o.bufSize = n
+		} else {
+			o.bufSize = DefaultBufferSize
+		}
+	}
 }
 
 // WithDelimiter sets the field delimiter, for example ',' for CSV, '\t' for
@@ -69,20 +90,21 @@ func WithFieldsPerRecord(n int) Option {
 	}
 }
 
-// WithMaxBuffer caps the Reader's internal buffer at n bytes. A record larger
-// than n cannot be parsed in memory, so Read returns ErrRecordTooLarge rather
-// than letting the buffer grow without bound. A non-positive n means no limit
-// (the default).
-func WithMaxBuffer(n int) Option {
+// WithMaxBufferSize caps the Writer or Reader's internal buffer at n bytes.
+// For a Reader, a record larger than n cannot be parsed in memory, so Read
+// returns ErrRecordTooLarge rather than letting the buffer grow without bound.
+// For a Writer, the internal buffer allocated for buffered I/O will not exceed
+// n bytes. A non-positive n means no limit (the default).
+func WithMaxBufferSize(n int) Option {
 	return func(o *options) {
 		o.maxBuf = n
 	}
 }
 
-// validDelim reports whether c is a usable delimiter. Delimiters above '\x7f'
+// validDelim reports whether c is a usable delimiter. Delimiters above 0x7f
 // are rejected: the parser scans single bytes, so a multi-byte UTF-8 delimiter
 // could never match, and a raw non-ASCII byte would silently corrupt the
 // parsing of any multibyte text.
 func validDelim(c byte) bool {
-	return c != 0 && c != '"' && c != '\r' && c != '\n' && c <= 0x7f
+	return c != 0 && c != '"' && c != '\r' && c != '\n' && c <= maxDelimByte
 }
